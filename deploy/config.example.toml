@@ -1,4 +1,4 @@
-# certsync 配置模板(§8)——按机器角色裁剪后放 /etc/certsync/config.toml(0644)
+# certsync 配置模板(8 节)——按机器角色裁剪后放 /etc/certsync/config.toml(0644)
 # 敏感凭证一律走 /etc/certsync/certsync.env(0600),本文件可提交配置仓库
 
 # ─── 签发机 ───────────────────────────────────────────────
@@ -21,7 +21,7 @@ secret_key = ""            # env: ALICLOUD_SECRET_KEY
 endpoint = "oss-cn-hangzhou.aliyuncs.com"
 region = "cn-hangzhou"     # V2 SDK 必填(V4 签名用)
 bucket = "my-cert-bucket"
-prefix = "certsync"        # --staging 时强制替换为 certsync-staging(§3)
+prefix = "certsync"        # --staging 时强制替换为 certsync-staging(3 节)
 access_key = ""            # env: OSS_ACCESS_KEY_ID(签发机=上传账号,业务机=拉取账号)
 secret_key = ""            # env: OSS_ACCESS_KEY_SECRET
 
@@ -38,9 +38,9 @@ check_cmd  = ["nginx", "-t"]               # 空数组 = 跳过检查(不建议)
 reload_cmd = ["systemctl", "reload", "nginx"]
 backup_dir = "/var/lib/certsync/backup"
 expire_alert_days = 15                     # 剩余低于此值,每轮 pull 都告警
-# post_reload_probe = false                # 默认开:reload 后本机探测服务证书指纹(§7.2)
+# post_reload_probe = false                # 默认开:reload 后本机探测服务证书指纹(7.2 节)
 
-[[pull.targets]]                           # 数组段,多证书组时重复此块(§16)
+[[pull.targets]]                           # 数组段,多证书组时重复此块(16 节)
 domain = "example.com"                     # 必须等于 acme.domains[0]
 cert_file = "/etc/nginx/certs/example.com/fullchain.pem"   # 落地路径可按环境调整
 key_file  = "/etc/nginx/certs/example.com/privkey.pem"

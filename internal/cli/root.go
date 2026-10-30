@@ -1,4 +1,4 @@
-// Package cli cobra 命令接线:root/keygen/issue/renew/push/pull/status/on-failure(§3)。
+// Package cli cobra 命令接线:root/keygen/issue/renew/push/pull/status/on-failure(3 节)。
 package cli
 
 import (
@@ -52,7 +52,7 @@ func loadConfig() (*config.Config, error) {
 	return config.Load(configFile)
 }
 
-// stateDirFor --staging 使用独立 state 子目录(§3 隔离规则)。
+// stateDirFor --staging 使用独立 state 子目录(3 节隔离规则)。
 func stateDirFor(cfg *config.Config, staging bool) string {
 	if staging {
 		return filepath.Join(cfg.State.Dir, "staging")
@@ -60,7 +60,7 @@ func stateDirFor(cfg *config.Config, staging bool) string {
 	return cfg.State.Dir
 }
 
-// prefixFor --staging 强制替换 OSS 前缀(§3 隔离规则:staging 证书绝不进正式链路)。
+// prefixFor --staging 强制替换 OSS 前缀(3 节隔离规则:staging 证书绝不进正式链路)。
 func prefixFor(cfg *config.Config, staging bool) string {
 	if staging {
 		return cfg.StagingPrefix()
@@ -76,7 +76,7 @@ func caServerFor(cfg *config.Config, staging bool) string {
 	return cfg.ACME.CAServer
 }
 
-// lockInstance flock 抢锁;抢不到直接退出(§7.3,timer 重叠/手工并发安全)。
+// lockInstance flock 抢锁;抢不到直接退出(7.3 节,timer 重叠/手工并发安全)。
 func lockInstance(lockFile string) (*os.File, error) {
 	if err := os.MkdirAll(filepath.Dir(lockFile), 0o755); err != nil {
 		return nil, err

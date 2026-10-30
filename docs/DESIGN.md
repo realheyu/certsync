@@ -4,7 +4,7 @@
 |---|---|
 | 版本 | v0.4(设计定稿,待评审;v0.2:依赖更新/toml/certbot 命名/路径清单;v0.3:验证体系强化/多通道告警;v0.4:OnFailure 兜底、webhook 鉴权头、state 备份机制、CI 定为 GitHub Actions、分发校验定为 SHA256、bucket 免版本控制/访问日志) |
 | 日期 | 2026-10-30 |
-| 状态 | 设计定稿,待评审;通过后进入 Phase 0(§15) |
+| 状态 | 设计定稿,待评审;通过后进入 Phase 0(15 节) |
 | 读者 | 运维 / 开发 |
 
 ---
@@ -50,9 +50,9 @@
 ### 非目标
 
 - 不做 Web UI、不做多租户
-- v1 只管理**一张证书组**(一组域名);多证书组留作扩展(§16)
+- v1 只管理**一张证书组**(一组域名);多证书组留作扩展(16 节)
 - 不管理证书之外的任何配置(nginx 配置仍由现有体系管理)
-- 不做 KMS 集成(v1 用预置对称密钥,KMS 见 §16 扩展)
+- 不做 KMS 集成(v1 用预置对称密钥,KMS 见 16 节扩展)
 
 ---
 
@@ -173,7 +173,7 @@
 
 - **私有读写**(default),禁止公共读
 - 可选开启服务端加密 SSE-KMS(纵深防御,非依赖项——客户端加密才是主要防线)
-- 仅存放证书密文与二进制分发产物(§11),不做他用
+- 仅存放证书密文与二进制分发产物(11 节),不做他用
 
 ---
 
@@ -221,9 +221,9 @@
 | 失陷点 | 暴露内容 | 影响 | 缓解 |
 |---|---|---|---|
 | OSS Bucket | 证书与私钥的 GCM 密文 | 无法解密 | 客户端加密(密文本身无价值) |
-| 任一业务机 | 该机明文证书私钥 + 只读 RAM 凭证 + 主密钥 | 该证书需吊销重签;主密钥需轮换 | 最小权限;机器加固;§6.4 轮换流程 |
+| 任一业务机 | 该机明文证书私钥 + 只读 RAM 凭证 + 主密钥 | 该证书需吊销重签;主密钥需轮换 | 最小权限;机器加固;6.4 节轮换流程 |
 | 签发机(最严重) | DNS 写密钥 + OSS 写凭证 + 明文证书 | 可篡改 DNS / 投毒分发 | 签发机单独加固:仅开放必要出网、无业务、密钥仅此一份;被入侵时的预案是吊销证书 + 换 DNS 密钥 + 全量轮换 |
-| 主密钥泄露 | OSS 密文可被解密 | 视同私钥泄露 | §6.4 轮换流程 |
+| 主密钥泄露 | OSS 密文可被解密 | 视同私钥泄露 | 6.4 节轮换流程 |
 
 ### 6.4 主密钥轮换流程
 
@@ -243,14 +243,14 @@
 
 | 路径 | 权限 | 内容 | 谁写 | 说明 |
 |---|---|---|---|---|
-| `/usr/local/bin/certsync` | 0755 root | 二进制 | 部署/升级(§11.1) | oneshot 形态,替换即升级 |
+| `/usr/local/bin/certsync` | 0755 root | 二进制 | 部署/升级(11.1 节) | oneshot 形态,替换即升级 |
 | `/etc/certsync/config.toml` | 0644 root | 配置 | 人工 | 不含密钥值,可入配置仓库 |
-| `/etc/certsync/certsync.env` ★ | 0600 root | AK/SK、钉钉加签密钥、邮箱密码等敏感环境变量 | 人工 | systemd `EnvironmentFile` 注入(§11.2) |
-| `/etc/certsync/certsync.key` ★ | 0600 root | AES 主密钥(base64) | 带外分发 | 轮换见 §6.4;env `CERTSYNC_KEY` 优先 |
+| `/etc/certsync/certsync.env` ★ | 0600 root | AK/SK、钉钉加签密钥、邮箱密码等敏感环境变量 | 人工 | systemd `EnvironmentFile` 注入(11.2 节) |
+| `/etc/certsync/certsync.key` ★ | 0600 root | AES 主密钥(base64) | 带外分发 | 轮换见 6.4 节;env `CERTSYNC_KEY` 优先 |
 | `/run/certsync.lock` | — | flock 锁 | 每次运行 | 仅锁不含数据;tmpfs,重启自清 |
-| stdout | — | 日志(slog 文本) | 每次运行 | journald 收集,不另落日志文件(§12.3) |
+| stdout | — | 日志(slog 文本) | 每次运行 | journald 收集,不另落日志文件(12.3 节) |
 
-**签发机 state(`/var/lib/certsync/`,整体 0700,定期打包备份——恢复能力见 §13)**
+**签发机 state(`/var/lib/certsync/`,整体 0700,定期打包备份——恢复能力见 13 节)**
 
 ```
 /var/lib/certsync/
@@ -263,23 +263,23 @@
     └── resource.json    0644  # lego Resource 存档(CertURL 等,吊销时用)
 ```
 
-签发机本地只保留当前版本;历史兜底由 `certsync-backup` 的每日快照(保留 14 份,含 certs/)与 `push` 重建(§13)承担,不依赖 OSS 版本控制。文件名与 OSS 明文体、业务机落地体三方同名,排查时一眼对上。
+签发机本地只保留当前版本;历史兜底由 `certsync-backup` 的每日快照(保留 14 份,含 certs/)与 `push` 重建(13 节)承担,不依赖 OSS 版本控制。文件名与 OSS 明文体、业务机落地体三方同名,排查时一眼对上。
 
-**state 备份机制**:签发机部署 `certsync-backup.{service,timer}`(§11.2),每日将 `accounts/` 与 `certs/` tar 打包到 `/var/lib/certsync/state-backup/`,保留最近 14 份;该目录再由现有备份体系/异地同步带走。§13 的两条签发机恢复路径(有备份/无备份)都以它为前提——备份不做,重建就只剩重新注册账户一条路。
+**state 备份机制**:签发机部署 `certsync-backup.{service,timer}`(11.2 节),每日将 `accounts/` 与 `certs/` tar 打包到 `/var/lib/certsync/state-backup/`,保留最近 14 份;该目录再由现有备份体系/异地同步带走。13 节的两条签发机恢复路径(有备份/无备份)都以它为前提——备份不做,重建就只剩重新注册账户一条路。
 
 **业务机(安装产物)**
 
 | 路径 | 权限 | 内容 | 说明 |
 |---|---|---|---|
-| `<pull.targets[].cert_file>`,默认 `/etc/nginx/certs/<domain>/fullchain.pem` | 0644 root | 安装的证书 | 原子替换(§7.2);路径可配置,共存期也可直接指向 acme.sh 原路径 |
+| `<pull.targets[].cert_file>`,默认 `/etc/nginx/certs/<domain>/fullchain.pem` | 0644 root | 安装的证书 | 原子替换(7.2 节);路径可配置,共存期也可直接指向 acme.sh 原路径 |
 | `<pull.targets[].key_file>`,默认 `/etc/nginx/certs/<domain>/privkey.pem` | 0600 root | 安装的私钥 | 同上 |
-| `/var/lib/certsync/backup/<domain>/<时间戳>/{fullchain.pem,privkey.pem}` | 0644/0600 | 旧证书备份 | 保留最近 10 份(§7.2) |
+| `/var/lib/certsync/backup/<domain>/<时间戳>/{fullchain.pem,privkey.pem}` | 0644/0600 | 旧证书备份 | 保留最近 10 份(7.2 节) |
 
 业务机**无其他状态文件**:pull 跳过判断所需的"已装指纹"从本地已装证书现算,不单独存档。
 
-**OSS 对象**(完整布局与写入顺序见 §5):`<prefix>/certs/<domain>/{fullchain.pem.enc, privkey.pem.enc, meta.json}`——前两者为 GCM 密文,meta.json 明文。
+**OSS 对象**(完整布局与写入顺序见 5 节):`<prefix>/certs/<domain>/{fullchain.pem.enc, privkey.pem.enc, meta.json}`——前两者为 GCM 密文,meta.json 明文。
 
-**内存与环境变量中的敏感数据**(盘上上述位置之外再无副本):`ALICLOUD_ACCESS_KEY/SECRET`、`OSS_ACCESS_KEY_ID/SECRET`、`CERTSYNC_KEY`、`DINGTALK_SECRET`、`ALERT_MAIL_USER/PASS`(env 注入);主密钥与解密后的证书私钥仅在进程内存中短暂存在,永不写日志(§6.1)。
+**内存与环境变量中的敏感数据**(盘上上述位置之外再无副本):`ALICLOUD_ACCESS_KEY/SECRET`、`OSS_ACCESS_KEY_ID/SECRET`、`CERTSYNC_KEY`、`DINGTALK_SECRET`、`ALERT_MAIL_USER/PASS`(env 注入);主密钥与解密后的证书私钥仅在进程内存中短暂存在,永不写日志(6.1 节)。
 
 ---
 
@@ -353,7 +353,7 @@ secret_key = ""            # env: ALICLOUD_SECRET_KEY
 endpoint = "oss-cn-hangzhou.aliyuncs.com"
 region = "cn-hangzhou"     # V2 SDK 必填(V4 签名用)
 bucket = "my-cert-bucket"
-prefix = "certsync"           # --staging 时强制替换为 certsync-staging(§3)
+prefix = "certsync"           # --staging 时强制替换为 certsync-staging(3 节)
 access_key = ""            # env: OSS_ACCESS_KEY_ID(签发机=上传账号,业务机=拉取账号)
 secret_key = ""            # env: OSS_ACCESS_KEY_SECRET
 
@@ -370,14 +370,14 @@ check_cmd  = ["nginx", "-t"]               # 空数组 = 跳过检查(不建议)
 reload_cmd = ["systemctl", "reload", "nginx"]
 backup_dir = "/var/lib/certsync/backup"
 expire_alert_days = 15                     # 剩余低于此值,每轮 pull 都告警
-post_reload_probe = true                   # reload 后本机 127.0.0.1 SNI 探测实际服务证书指纹(§7.2)
+post_reload_probe = true                   # reload 后本机 127.0.0.1 SNI 探测实际服务证书指纹(7.2 节)
 
-[[pull.targets]]                           # 数组段,多证书组时重复此块(§16)
+[[pull.targets]]                           # 数组段,多证书组时重复此块(16 节)
 domain = "example.com"                     # 必须等于 acme.domains[0]
 cert_file = "/etc/nginx/certs/example.com/fullchain.pem"   # 落地路径可按环境调整
 key_file  = "/etc/nginx/certs/example.com/privkey.pem"
 
-[alert]                    # 多通道:已配置的通道并行扇出同一事件;全空 = 不告警(§12.2)
+[alert]                    # 多通道:已配置的通道并行扇出同一事件;全空 = 不告警(12.2 节)
 
 [alert.webhook]            # 通用 JSON POST(自建接收端;不用就整段删除)
 url = ""
@@ -410,18 +410,18 @@ to = ["ops@example.com"]
 | ACME | `github.com/go-acme/lego/v5`(库形态) | v5.6.0 | Traefik 同款,alidns provider 内置;v5 为当前主线(v4 已停止演进),支持 ARI / ACME profiles;替代 acme.sh |
 | OSS | `github.com/aliyun/alibabacloud-oss-go-sdk-v2` | v1.6.1 | 官方新一代 SDK(完全重写的 V2,官方手册即此版);旧 `aliyun-oss-go-sdk/v3` 已被其取代 |
 | 证书解析/校验 | 标准库 `crypto/x509` | — | SAN/有效期/密钥配对,不 shell 调 openssl |
-| 加密 | 标准库 `crypto/aes` + `cipher.NewGCM` | — | 见 §6.1 |
+| 加密 | 标准库 `crypto/aes` + `cipher.NewGCM` | — | 见 6.1 节 |
 | CLI | `github.com/spf13/cobra` | v1.10.2 | 子命令 + flag |
 | 配置 | `github.com/BurntSushi/toml` | v1.6.0 | 仅解码(配置只读不写);零第三方依赖,事实标准 |
 | 日志 | 标准库 `log/slog` | — | 文本格式到 stdout,由 journal 收集 |
 | 邮件告警 | 标准库 `net/smtp` | — | 465 隐式 TLS 自行 tls.Dial 后接 NewClient,几十行;不引第三方库 |
 | 文件锁 | `golang.org/x/sys/unix` `Flock` | v0.49.0 | |
 | 重试 | 自实现 20 行指数退避 | — | 减少供应链面 |
-| 构建 | Makefile(GOOS/GOARCH 交叉编译),版本 `-ldflags` 注入;CI 跑 `staticcheck` + `gosec` + `govulncheck`(依赖已知漏洞)+ `gitleaks`(密钥泄露扫描) | — | 工具碰私钥,值得安全扫描;发布产物附 SBOM,见 §11.1 |
+| 构建 | Makefile(GOOS/GOARCH 交叉编译),版本 `-ldflags` 注入;CI 跑 `staticcheck` + `gosec` + `govulncheck`(依赖已知漏洞)+ `gitleaks`(密钥泄露扫描) | — | 工具碰私钥,值得安全扫描;发布产物附 SBOM,见 11.1 节 |
 
 Go 版本:**1.27**(2026-08 发布的当前稳定线);`go.mod` 钉死直接依赖版本,上表"钉死版本"为 2026-10-30 经 Go module proxy 核实的最新正式版。
 
-CI:**GitHub Actions**——push/PR 跑 lint(`staticcheck`/`gosec`/`govulncheck`/`gitleaks`)+ 单测 + pebble E2E(§15 CI 层);打 tag 触发交叉构建与发布产物(§11.1),私钥类凭证用 GitHub Encrypted Secrets。
+CI:**GitHub Actions**——push/PR 跑 lint(`staticcheck`/`gosec`/`govulncheck`/`gitleaks`)+ 单测 + pebble E2E(15 节 CI 层);打 tag 触发交叉构建与发布产物(11.1 节),私钥类凭证用 GitHub Encrypted Secrets。
 
 ---
 
@@ -458,7 +458,7 @@ certsync/
 - CI 产出 `certsync-linux-amd64` / `certsync-linux-arm64` + `SHA256SUMS` + SBOM(syft)
 - 存放于同一 OSS Bucket 的 `dist/` 前缀(走拉取账号的只读权限之外单独授权,或直接复用手工分发)
 - 安装脚本:下载 → sha256 校验 → `install -m 755` 到 `/usr/local/bin/certsync` → `certsync version`
-- 校验体系有意保持 SHA256 单层、不引入签名:**同源替换风险由写权限隔离兜底**——certs/ 与 dist/ 前缀的上传凭证相互独立(§6.2 上传账号仅可写 certs/),攻破任一凭证都换不掉另一前缀的内容
+- 校验体系有意保持 SHA256 单层、不引入签名:**同源替换风险由写权限隔离兜底**——certs/ 与 dist/ 前缀的上传凭证相互独立(6.2 节上传账号仅可写 certs/),攻破任一凭证都换不掉另一前缀的内容
 - 升级:替换二进制即可(oneshot/timer 形态无常驻进程,下一轮 timer 自动用新版);多机版本差异通过 `certsync version` 巡检
 
 ### 11.2 systemd 单元
@@ -513,9 +513,9 @@ EnvironmentFile=-/etc/certsync/certsync.env
 ExecStart=/usr/local/bin/certsync on-failure %i
 ```
 
-`certsync on-failure` 是刻意保持极短的代码路径:只读告警配置、发送 `unit_failed` 事件,不触碰 ACME/OSS/deploy 任何逻辑。二进制整体缺失时此钩子同样起不来,但 systemd 在 journal 留痕可巡检(§12.3),业务侧另有 `expiry_warning` 生命线(§12.1)——三层兜底互不依赖。
+`certsync on-failure` 是刻意保持极短的代码路径:只读告警配置、发送 `unit_failed` 事件,不触碰 ACME/OSS/deploy 任何逻辑。二进制整体缺失时此钩子同样起不来,但 systemd 在 journal 留痕可巡检(12.3 节),业务侧另有 `expiry_warning` 生命线(12.1 节)——三层兜底互不依赖。
 
-签发机另部署 `certsync-backup.{service,timer}`(每日打包 state 到 `/var/lib/certsync/state-backup/`,保留最近 14 份,机制见 §6.5)。
+签发机另部署 `certsync-backup.{service,timer}`(每日打包 state 到 `/var/lib/certsync/state-backup/`,保留最近 14 份,机制见 6.5 节)。
 
 ### 11.3 单机安装清单
 
@@ -581,7 +581,7 @@ ALERT_MAIL_PASS=…
 
 钉钉群自定义机器人的协议要点(踩坑点提前写死,实现按此验收):
 
-- **加签**:机器人安全设置选"加签"时 `secret` 必填,请求需附加 `timestamp`(毫秒)与 `sign`(HMAC-SHA256,密钥与被签串均为 `"<timestamp>\n<secret>"`,结果 base64 后 urlencode)。**timestamp 与钉钉服务器时差超过 1 小时直接拒绝——NTP 是硬前提,与 §7.5 证书有效期校验共用同一依赖**
+- **加签**:机器人安全设置选"加签"时 `secret` 必填,请求需附加 `timestamp`(毫秒)与 `sign`(HMAC-SHA256,密钥与被签串均为 `"<timestamp>\n<secret>"`,结果 base64 后 urlencode)。**timestamp 与钉钉服务器时差超过 1 小时直接拒绝——NTP 是硬前提,与 7.5 节证书有效期校验共用同一依赖**
 - **响应语义**:HTTP 200 ≠ 成功,必须校验 body 的 `errcode == 0`(关键词不匹配、签名错误、限流都以 200 + errcode 返回;实现只看 HTTP 状态码 = 告警静默丢失)
 - **关键词过滤**:机器人若配"自定义关键词",消息文本必须包含该词——告警模板首词固定为 `certsync`,机器人侧把关键词配成 `certsync` 即可
 - **限流**:单机器人 20 条/分钟,超限封禁 10 分钟;各机 timer 已带 `RandomizedDelaySec` 天然错峰,常态足够;机器数 > 20 且同时故障的极端场景需按机房拆多个机器人
@@ -611,7 +611,7 @@ ALERT_MAIL_PASS=…
 | reload 失败 | 回滚磁盘文件告警;nginx 内存中仍是旧证书,服务未断 | 手工 `nginx -t` 排查 |
 | 业务机连续多轮拉取失败 | 本地证书持续老化,临期触发 `expiry_warning` | 按 15 天缓冲修复 |
 | **签发机宕机/丢失** | 证书仍全网有效;最长 30 天无续期 | 新机:恢复 state 备份 → 装 certsync → 完事;无备份则重新注册 ACME 账户 + `issue`(证书会立即重签,指纹变化自动全网分发) |
-| 主密钥泄露 | — | 执行 §6.4 轮换流程 |
+| 主密钥泄露 | — | 执行 6.4 节轮换流程 |
 
 ---
 
@@ -633,18 +633,18 @@ ALERT_MAIL_PASS=…
 - [ ] 单元测试:AES-GCM 往返/防篡改、SAN 通配匹配、密钥配对、fullchain 结构校验(首块叶子+至少一张中间证书)、部署回滚(伪命令)
 - [ ] 本地 ACME E2E:CI 内起 pebble(LE 官方 ACME 测试服务器)+ challtestsrv(应答 DNS-01),完整走 issue→push→pull→安装→探测——签发逻辑的回归不依赖真实 CA
 
-**staging 层(真实 CA、非受信证书,走 §3 的 `--staging` 隔离链路)**
+**staging 层(真实 CA、非受信证书,走 3 节的 `--staging` 隔离链路)**
 
 - [ ] LE staging 端到端:issue → OSS(-staging 前缀)→ 测试机 pull → nginx reload → 探测指纹一致 → curl 验证
 - [ ] 产物证书过 zlint(CA 签发同款 lint 工具,要求 0 error);testssl.sh 验证链完整
-- [ ] `nginx -t` 故意失败 → 确认回滚生效;构造探测指纹不一致 → 确认只告警、不误回滚(§7.2 例外路径)
+- [ ] `nginx -t` 故意失败 → 确认回滚生效;构造探测指纹不一致 → 确认只告警、不误回滚(7.2 节例外路径)
 - [ ] 断网 pull → 确认无副作用;告警全部事件真实触达
 
-**演练层(§13 的失败场景不是纸面推演,逐条实走)**
+**演练层(13 节的失败场景不是纸面推演,逐条实走)**
 
 - [ ] OSS 对象误删 → `push` 恢复
 - [ ] 签发机 state 全毁 → 备份重建、无备份重注册账户,两条恢复路各走一遍
-- [ ] 主密钥轮换全流程(§6.4),含过渡期旧密钥机器"保留旧证书 + 告警"的行为验证
+- [ ] 主密钥轮换全流程(6.4 节),含过渡期旧密钥机器"保留旧证书 + 告警"的行为验证
 
 ### Phase 1:正式环境共存(观察期)
 
@@ -674,7 +674,7 @@ ALERT_MAIL_PASS=…
 - **KMS 信封加密**:主密钥托管阿里云 KMS,业务机用实例 RAM 角色换取数据密钥,消灭手工分发;接口已按"密钥加载器"隔离,替换实现不动主体
 - **自更新**:从 OSS dist/ 拉新版本自替换(校验 sha256)
 - **Prometheus metrics**:pull 成功/失败计数、证书剩余天数 gauge、blackbox TLS 探测(从外部探测 nginx 实际服务的证书,与磁盘文件状态解耦)
-- **Kubernetes**:上 K8s 后整体退役,换 cert-manager(§1.1)
+- **Kubernetes**:上 K8s 后整体退役,换 cert-manager(1.1 节)
 - **ZeroSSL/多 CA 自动降级**:主 CA 限额时自动切备用(依赖 ARI,暂无必要)
 
 ---
@@ -687,12 +687,12 @@ ALERT_MAIL_PASS=…
 |---|---|---|---|
 | ① | 同组域名 7 天 5 张、无豁免;staging 限额显著更高 | LE 官方 https://letsencrypt.org/docs/rate-limits/ | 打开该页比对原文 |
 | ② | 泛域名仅 DNS-01 可验证;ACME 语义;ARI 续期建议 | RFC 8555;ARI = RFC 9773(2025-09 发布) | rfc-editor.info 阅读原文 |
-| ③ | 老设备不信任 ISRG Root X1 的时间线(DST Root X3 交叉签名 2024-09-30 到期) | LE 官方 https://letsencrypt.org/certificates/ | 读该页 + 老设备真机实测(§14 决策前置) |
-| ④ | `Bundle: true` 时 `res.Certificate`=叶子+中间;alidns 读 `ALICLOUD_*` 环境变量 | lego 源码 `certificate/certificates.go`、`providers/dns/alidns/alidns.go` | clone 后 grep;E2E 后数产物 PEM 块数(§7.1 已固化为安装校验) |
-| ⑤ | OSS SDK V2 凭证环境变量名、region 必填 | SDK 源码 + 官方 V2 手册(§9 引用) | grep 源码 / 读手册 |
+| ③ | 老设备不信任 ISRG Root X1 的时间线(DST Root X3 交叉签名 2024-09-30 到期) | LE 官方 https://letsencrypt.org/certificates/ | 读该页 + 老设备真机实测(14 节决策前置) |
+| ④ | `Bundle: true` 时 `res.Certificate`=叶子+中间;alidns 读 `ALICLOUD_*` 环境变量 | lego 源码 `certificate/certificates.go`、`providers/dns/alidns/alidns.go` | clone 后 grep;E2E 后数产物 PEM 块数(7.1 节已固化为安装校验) |
+| ⑤ | OSS SDK V2 凭证环境变量名、region 必填 | SDK 源码 + 官方 V2 手册(9 节引用) | grep 源码 / 读手册 |
 | ⑥ | 依赖钉死版本为最新正式版 | Go module proxy | `go list -m <模块>@latest`,任何人可查 |
 | ⑦ | "签发成功"这一事实 | CA 侧 CT 日志(与 certsync 无关的第三方) | crt.sh 查询域名,证书必然在册 |
-| ⑧ | "nginx 在服务正确证书" | 传输层实测,而非文件状态 | §12.3 openssl s_client 指纹比对 |
+| ⑧ | "nginx 在服务正确证书" | 传输层实测,而非文件状态 | 12.3 节 openssl s_client 指纹比对 |
 
 ## 附录B:术语
 

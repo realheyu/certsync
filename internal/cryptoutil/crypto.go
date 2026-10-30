@@ -1,4 +1,4 @@
-// Package cryptoutil 实现 §6.1:AES-256-GCM、随机 nonce 前置、主密钥生成与加载。
+// Package cryptoutil 实现 6.1 节:AES-256-GCM、随机 nonce 前置、主密钥生成与加载。
 package cryptoutil
 
 import (
@@ -23,7 +23,7 @@ func GenerateKey() ([]byte, error) {
 }
 
 // Encrypt AES-256-GCM 加密,输出 = nonce(12B) || ciphertext||tag。
-// 同一密钥每次加密使用全新随机 nonce(§6.1)。
+// 同一密钥每次加密使用全新随机 nonce(6.1 节)。
 func Encrypt(key, plaintext []byte) ([]byte, error) {
 	if len(key) != KeySize {
 		return nil, fmt.Errorf("密钥长度 %d,应为 %d", len(key), KeySize)
@@ -63,7 +63,7 @@ func Decrypt(key, data []byte) ([]byte, error) {
 	return gcm.Open(nil, nonce, ciphertext, nil)
 }
 
-// LoadKey 加载主密钥:环境变量 CERTSYNC_KEY(base64)优先,否则读文件(base64,§8)。
+// LoadKey 加载主密钥:环境变量 CERTSYNC_KEY(base64)优先,否则读文件(base64,8 节)。
 func LoadKey(keyFile string) ([]byte, error) {
 	if env := os.Getenv("CERTSYNC_KEY"); env != "" {
 		key, err := base64.StdEncoding.DecodeString(env)

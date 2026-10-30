@@ -1,4 +1,4 @@
-// Package alert 多通道告警:通用 webhook、钉钉群机器人(加签)、SMTP 邮件(§12.2)。
+// Package alert 多通道告警:通用 webhook、钉钉群机器人(加签)、SMTP 邮件(12.2 节)。
 package alert
 
 import (
@@ -23,7 +23,7 @@ import (
 	"github.com/hy/certsync/internal/config"
 )
 
-// Event 一条告警事件(字段与 §12.2 payload 一致,Level 用于邮件主题)。
+// Event 一条告警事件(字段与 12.2 节 payload 一致,Level 用于邮件主题)。
 type Event struct {
 	Event  string `json:"event"`
 	Level  string `json:"level,omitempty"`
@@ -49,7 +49,7 @@ func NewSender(cfg config.Alert, log *slog.Logger) *Sender {
 	return &Sender{cfg: cfg, client: &http.Client{Timeout: 10 * time.Second}, log: log}
 }
 
-// Send 并行语义简化为顺序发送;单通道失败只记日志,不阻塞其他通道(§7.4)。
+// Send 并行语义简化为顺序发送;单通道失败只记日志,不阻塞其他通道(7.4 节)。
 func (s *Sender) Send(ev Event) {
 	if s.cfg.Webhook.URL != "" {
 		if err := s.sendWebhook(ev); err != nil {
@@ -90,7 +90,7 @@ func (s *Sender) sendWebhook(ev Event) error {
 	return nil
 }
 
-// dingTalkResp 钉钉返回体:HTTP 200 ≠ 成功,必须查 errcode(§12.2)。
+// dingTalkResp 钉钉返回体:HTTP 200 ≠ 成功,必须查 errcode(12.2 节)。
 type dingTalkResp struct {
 	ErrCode int    `json:"errcode"`
 	ErrMsg  string `json:"errmsg"`
@@ -129,7 +129,7 @@ func (s *Sender) sendDingTalk(ev Event) error {
 	return nil
 }
 
-// signedDingTalkURL 按加签规范附加 timestamp 与 sign(§12.2:HMAC-SHA256,密钥与
+// signedDingTalkURL 按加签规范附加 timestamp 与 sign(12.2 节:HMAC-SHA256,密钥与
 // 被签串均为 "<timestamp>\n<secret>",base64 后 urlencode)。
 func signedDingTalkURL(webhook, secret string, now time.Time) (string, error) {
 	if webhook == "" {
@@ -153,7 +153,7 @@ func signedDingTalkURL(webhook, secret string, now time.Time) (string, error) {
 }
 
 // sendMail 邮件通道:主题 [certsync] <级别> <event> <host> <域名>,正文为事件 JSON。
-// 465=隐式 TLS(自行 tls.Dial),587=STARTTLS,25=仅限内网中继(§12.2)。
+// 465=隐式 TLS(自行 tls.Dial),587=STARTTLS,25=仅限内网中继(12.2 节)。
 func (s *Sender) sendMail(ev Event) error {
 	m := s.cfg.Mail
 	addr := m.Host + ":" + strconv.Itoa(m.Port)

@@ -1,12 +1,12 @@
 # certsync 上线准备清单(办一件勾一件)
 
-> 设计依据:DESIGN.md §5.4 / §6.2 / §6.5 / §11;权限/路径明细以设计文档为准。
+> 设计依据:DESIGN.md 5.4 节 / 6.2 节 / 6.5 节 / 11 节;权限/路径明细以设计文档为准。
 
 ## 一、阿里云控制台
 
 - [ ] 创建 OSS bucket(区域就近,如 cn-hangzhou),私有读写(bucket 不开版本控制/访问日志)
 - [ ] 记录 endpoint(`oss-cn-hangzhou.aliyuncs.com`)/ region(`cn-hangzhou`)/ bucket 名
-- [ ] RAM 上传账号(签发机用):自定义策略仅 `oss:PutObject` 于 `<bucket>/certsync/certs/*`(策略 JSON 见 §6.2),禁控制台登录,生成 AK/SK
+- [ ] RAM 上传账号(签发机用):自定义策略仅 `oss:PutObject` 于 `<bucket>/certsync/certs/*`(策略 JSON 见 6.2 节),禁控制台登录,生成 AK/SK
 - [ ] RAM 拉取账号(业务机公用):仅 `oss:GetObject` 同前缀,禁控制台登录,生成 AK/SK
 - [ ] RAM DNS 账号(签发机用):授权 `AddDomainRecord` / `DescribeDomainRecords` / `UpdateDomainRecord` / `DeleteDomainRecord`,生成 AK/SK
 - [ ] 确认域名托管在阿里云 DNS(现状已满足则直接勾)
@@ -18,7 +18,7 @@
 
 ## 三、机器
 
-- [ ] 签发机 ×1:现代 Linux(systemd),无业务,单独使用(§6.3 最高危机器)
+- [ ] 签发机 ×1:现代 Linux(systemd),无业务,单独使用(6.3 节最高危机器)
 - [ ] 签发机出网白名单:`api.letsencrypt.org:443` + `acme-staging-v02.api.letsencrypt.org:443`、`alidns.aliyuncs.com:443`、`<bucket>.oss-*.aliyuncs.com:443`、`oapi.dingtalk.com:443`、SMTP 465/587
 - [ ] 签发机 NTP 运行中(`timedatectl status` 确认 NTP synchronized)
 - [ ] 业务机 ×1~2(Phase 1 用非核心机):nginx 已装、`systemctl reload nginx` 可用
@@ -38,8 +38,8 @@
 - LE 正式/staging 账户:lego 首跑自动注册(只需定一个接 CA 通知的邮箱)
 - ZeroSSL EAB:切 CA 那天才办
 - pebble / challtestsrv:CI 自带
-- acme.sh:保持运行不动,Phase 2 才停(§15)
+- acme.sh:保持运行不动,Phase 2 才停(15 节)
 
 ## 完成标志
 
-以上全勾 + Phase 0 三层验收(CI / staging / 演练)通过 → 进入 §15 Phase 1 共存观察期。
+以上全勾 + Phase 0 三层验收(CI / staging / 演练)通过 → 进入 15 节 Phase 1 共存观察期。

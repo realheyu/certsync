@@ -31,11 +31,11 @@ func newIssueCmd() *cobra.Command {
 			return runIssue(cfg, staging)
 		},
 	}
-	cmd.Flags().BoolVar(&staging, "staging", false, "使用 LE 测试环境与隔离的 state/OSS 前缀(§3)")
+	cmd.Flags().BoolVar(&staging, "staging", false, "使用 LE 测试环境与隔离的 state/OSS 前缀(3 节)")
 	return cmd
 }
 
-// runIssue:申领 → 落盘 state → 加密上传;issue_ok / issue_fail 告警(§12.1)。
+// runIssue:申领 → 落盘 state → 加密上传;issue_ok / issue_fail 告警(12.1 节)。
 func runIssue(cfg *config.Config, staging bool) error {
 	log := logger()
 	primary := cfg.PrimaryDomain()
@@ -68,7 +68,7 @@ func newRenewCmd() *cobra.Command {
 	var staging bool
 	cmd := &cobra.Command{
 		Use:   "renew",
-		Short: "到续期窗口(默认剩余<30天)才触发 issue,否则退出;并自愈 OSS 缺失(§13)",
+		Short: "到续期窗口(默认剩余<30天)才触发 issue,否则退出;并自愈 OSS 缺失(13 节)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := loadConfig()
 			if err != nil {
@@ -103,7 +103,7 @@ func runRenew(cfg *config.Config, staging bool) error {
 		log.Debug("renew_skipped:未到续期窗口",
 			"remaining_days", certutil.RemainingDays(leaf, now()),
 			"renew_before_days", cfg.ACME.RenewBeforeDays)
-		// §13 自愈:证书未变但 OSS 对象缺失/不一致时补推
+		// 13 节自愈:证书未变但 OSS 对象缺失/不一致时补推
 		return selfHealOSS(cfg, staging)
 	}
 	log.Info("进入续期窗口,触发 issue", "remaining_days", certutil.RemainingDays(leaf, now()))
@@ -142,7 +142,7 @@ func newPushCmd() *cobra.Command {
 	var keyFile string
 	cmd := &cobra.Command{
 		Use:   "push",
-		Short: "不联系 CA,把本地 state 证书重新加密上传(误删恢复/换密钥重加密,§6.4)",
+		Short: "不联系 CA,把本地 state 证书重新加密上传(误删恢复/换密钥重加密,6.4 节)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := loadConfig()
 			if err != nil {
@@ -161,8 +161,8 @@ func newPushCmd() *cobra.Command {
 	return cmd
 }
 
-// pushLocal 读 state 产物 → 用主密钥加密 → 按 §5.3 顺序上传。
-// keyFileOverride 非空时用它替代配置里的主密钥文件(§6.4 轮换流程)。
+// pushLocal 读 state 产物 → 用主密钥加密 → 按 5.3 节顺序上传。
+// keyFileOverride 非空时用它替代配置里的主密钥文件(6.4 节轮换流程)。
 func pushLocal(cfg *config.Config, staging bool, keyFileOverride string) error {
 	log := logger()
 	primary := cfg.PrimaryDomain()

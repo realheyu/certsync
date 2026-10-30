@@ -27,7 +27,7 @@ certsync renew ──lego/DNS-01──►  certsync/certs/<域名>/  ──pull�
 | `certsync push` | 不联系 CA,把本地证书重新加密上传(误删恢复/换密钥重加密) |
 | `certsync pull [--domain x]` | 拉取、六重校验、原子安装、reload、探测确认 |
 | `certsync status` | 各证书域名/到期时间/剩余天数 |
-| `certsync on-failure <unit>` | systemd OnFailure 兜底钩子(设计 §11.2) |
+| `certsync on-failure <unit>` | systemd OnFailure 兜底钩子(设计 11.2 节) |
 
 ## 快速开始
 
@@ -54,4 +54,4 @@ certsync issue --staging && certsync issue
 
 ## 状态
 
-设计定稿 v0.4,待评审;实施计划见设计文档 §15(Phase 0 验收 → 共存观察 → 切换)。
+设计定稿 v0.4,待评审;实施计划见设计文档 15 节(Phase 0 验收 → 共存观察 → 切换)。

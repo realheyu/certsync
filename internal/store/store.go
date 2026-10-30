@@ -1,4 +1,4 @@
-// Package store OSS 读写:meta.json、密文对象、§5.3 上传顺序约定、§7.4 重试。
+// Package store OSS 读写:meta.json、密文对象、5.3 节上传顺序约定、7.4 节重试。
 package store
 
 import (
@@ -17,10 +17,10 @@ import (
 	"github.com/hy/certsync/internal/config"
 )
 
-// ErrNotFound 对象不存在(pull 侧据此告警,§13)。
+// ErrNotFound 对象不存在(pull 侧据此告警,13 节)。
 var ErrNotFound = errors.New("OSS 对象不存在")
 
-// Meta §5.2:明文元数据,指纹是全网唯一比对依据。
+// Meta 5.2 节:明文元数据,指纹是全网唯一比对依据。
 type Meta struct {
 	Domain      string    `json:"domain"`
 	Fingerprint string    `json:"fingerprint"`
@@ -38,7 +38,7 @@ type Store struct {
 	log    *slog.Logger
 }
 
-// New 创建 OSS 客户端;prefix 传空则用 cfg.Prefix(--staging 时传 cfg.StagingPrefix,§3)。
+// New 创建 OSS 客户端;prefix 传空则用 cfg.Prefix(--staging 时传 cfg.StagingPrefix,3 节)。
 func New(cfg config.OSS, prefix string, log *slog.Logger) (*Store, error) {
 	if cfg.Region == "" || cfg.Bucket == "" || cfg.AccessKey == "" {
 		return nil, fmt.Errorf("oss 配置不完整(region/bucket/凭证),请检查 config.toml 与 certsync.env")
@@ -65,7 +65,7 @@ func (s *Store) metaKey(domain string) string {
 	return s.prefix + "/certs/" + domain + "/meta.json"
 }
 
-// PushCert 按 §5.3 顺序上传:fullchain.enc → privkey.enc → meta.json(提交点)。
+// PushCert 按 5.3 节顺序上传:fullchain.enc → privkey.enc → meta.json(提交点)。
 func (s *Store) PushCert(domain string, certEnc, keyEnc []byte, meta Meta) error {
 	ctx := context.Background()
 	if err := s.put(ctx, s.certKey(domain), certEnc); err != nil {
@@ -108,7 +108,7 @@ func (s *Store) GetEncryptedPair(domain string) (certEnc, keyEnc []byte, err err
 	return certEnc, keyEnc, nil
 }
 
-// put 带指数退避重试(1s/2s/4s,3 次,§7.4)。
+// put 带指数退避重试(1s/2s/4s,3 次,7.4 节)。
 func (s *Store) put(ctx context.Context, key string, data []byte) error {
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
@@ -129,7 +129,7 @@ func (s *Store) put(ctx context.Context, key string, data []byte) error {
 	return lastErr
 }
 
-// get 带重试的下载,单请求 30s 超时(§7.4)。
+// get 带重试的下载,单请求 30s 超时(7.4 节)。
 func (s *Store) get(key string) ([]byte, error) {
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {

@@ -14,7 +14,7 @@ import (
 func newStatusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
-		Short: "打印各 target 本地证书的域名、到期时间、剩余天数(§3 巡检)",
+		Short: "打印各 target 本地证书的域名、到期时间、剩余天数(3 节巡检)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := loadConfig()
 			if err != nil {
@@ -61,7 +61,7 @@ func newStatusCmd() *cobra.Command {
 func newOnFailureCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "on-failure <unit>",
-		Short: "systemd OnFailure 兜底钩子:极短路径,只发 unit_failed 告警(§11.2)",
+		Short: "systemd OnFailure 兜底钩子:极短路径,只发 unit_failed 告警(11.2 节)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := loadConfig()

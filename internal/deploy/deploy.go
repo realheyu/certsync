@@ -1,4 +1,4 @@
-// Package deploy 原子安装、备份、check/reload、回滚与 reload 后探测(§7.2)。
+// Package deploy 原子安装、备份、check/reload、回滚与 reload 后探测(7.2 节)。
 package deploy
 
 import (
@@ -18,7 +18,7 @@ import (
 const KeepBackups = 10 // 每域名保留最近 10 份
 
 // ErrProbeMismatch:reload 后探测指纹不一致——文件已过全部内容校验,
-// 不一致几乎必是 nginx 配置引用了别的路径,回滚无意义,只告警(§7.2 例外路径)。
+// 不一致几乎必是 nginx 配置引用了别的路径,回滚无意义,只告警(7.2 节例外路径)。
 var ErrProbeMismatch = errors.New("reload 后实际服务证书指纹与预期不一致(不回滚,请检查 nginx 配置路径)")
 
 type Target struct {
@@ -37,7 +37,7 @@ type Options struct {
 	SkipProbe bool
 }
 
-// Install 执行 §7.2 流程:临时文件 → 备份 → rename → check → reload → 探测。
+// Install 执行 7.2 节流程:临时文件 → 备份 → rename → check → reload → 探测。
 // 任一步失败(探测除外)从备份恢复原文件或删除新增文件后返回错误。
 func Install(t Target, certPEM, keyPEM []byte, opts Options) (string, error) {
 	certTmp, err := writeTemp(t.CertFile, certPEM, 0o644)
@@ -127,7 +127,7 @@ func expectedFingerprint(certPEM []byte) (string, error) {
 	return certutil.Fingerprint(certutil.Leaf(certs)), nil
 }
 
-// writeTemp 写临时文件:与目标同目录保证 rename 原子性(§7.2)。
+// writeTemp 写临时文件:与目标同目录保证 rename 原子性(7.2 节)。
 func writeTemp(dst string, data []byte, mode os.FileMode) (string, error) {
 	dir := filepath.Dir(dst)
 	if err := os.MkdirAll(dir, 0o755); err != nil {

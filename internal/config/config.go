@@ -1,4 +1,4 @@
-// Package config 加载 /etc/certsync/config.toml 并按 §8 约定做空值环境变量回退。
+// Package config 加载 /etc/certsync/config.toml 并按 8 节约定做空值环境变量回退。
 package config
 
 import (
@@ -72,7 +72,7 @@ type Pull struct {
 	ReloadCmd       []string     `toml:"reload_cmd"`
 	BackupDir       string       `toml:"backup_dir"`
 	ExpireAlertDays int          `toml:"expire_alert_days"`
-	// PostReloadProbe 用指针区分"未配置"(默认开)与"显式 false"(§7.2)。
+	// PostReloadProbe 用指针区分"未配置"(默认开)与"显式 false"(7.2 节)。
 	PostReloadProbe *bool `toml:"post_reload_probe"`
 }
 
@@ -141,7 +141,7 @@ func (c *Config) applyDefaults() {
 	}
 }
 
-// envFallback:toml 留空 → 取环境变量(§8 表内标注的项)。
+// envFallback:toml 留空 → 取环境变量(8 节表内标注的项)。
 func (c *Config) envFallback() {
 	setIfEmpty(&c.AliDNS.AccessKey, "ALICLOUD_ACCESS_KEY")
 	setIfEmpty(&c.AliDNS.SecretKey, "ALICLOUD_SECRET_KEY")
@@ -158,7 +158,7 @@ func setIfEmpty(dst *string, env string) {
 	}
 }
 
-// PrimaryDomain 返回证书组主域名(存储主键,§5.1)。
+// PrimaryDomain 返回证书组主域名(存储主键,5.1 节)。
 func (c *Config) PrimaryDomain() string {
 	if len(c.ACME.Domains) == 0 {
 		return ""
@@ -166,7 +166,7 @@ func (c *Config) PrimaryDomain() string {
 	return c.ACME.Domains[0]
 }
 
-// StagingPrefix 返回 --staging 模式强制使用的 OSS 前缀(§3)。
+// StagingPrefix 返回 --staging 模式强制使用的 OSS 前缀(3 节)。
 func (c *Config) StagingPrefix() string {
 	return c.OSS.Prefix + "-staging"
 }

@@ -20,7 +20,7 @@ func newPullCmd() *cobra.Command {
 	var domain string
 	cmd := &cobra.Command{
 		Use:   "pull [--domain x]",
-		Short: "拉取、校验、原子安装、reload、探测确认(业务机 timer,§3)",
+		Short: "拉取、校验、原子安装、reload、探测确认(业务机 timer,3 节)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := loadConfig()
 			if err != nil {
@@ -29,7 +29,7 @@ func newPullCmd() *cobra.Command {
 			return runPull(cfg, domain)
 		},
 	}
-	cmd.Flags().StringVar(&domain, "domain", "", "只处理指定 target(灰度单台观察,§14)")
+	cmd.Flags().StringVar(&domain, "domain", "", "只处理指定 target(灰度单台观察,14 节)")
 	return cmd
 }
 
@@ -71,8 +71,8 @@ func runPull(cfg *config.Config, onlyDomain string) error {
 	return nil
 }
 
-// pullTarget 单个 target 的完整流程:meta → 指纹比对 → 下载解密 → §7.1 校验链
-// → 原子安装(§7.2)→ 到期检查(§12.1 expiry_warning 兜底生命线)。
+// pullTarget 单个 target 的完整流程:meta → 指纹比对 → 下载解密 → 7.1 节校验链
+// → 原子安装(7.2 节)→ 到期检查(12.1 节 expiry_warning 兜底生命线)。
 func pullTarget(cfg *config.Config, st *store.Store, alerter *alert.Sender, key []byte, tgt config.PullTarget) error {
 	log := logger()
 
@@ -88,7 +88,7 @@ func pullTarget(cfg *config.Config, st *store.Store, alerter *alert.Sender, key 
 	if raw, rerr := os.ReadFile(tgt.CertFile); rerr == nil {
 		if certs, perr := certutil.ParseCertificates(raw); perr == nil {
 			localFP = certutil.Fingerprint(certutil.Leaf(certs))
-			// 到期兜底检查独立于安装链路(§12.1:签发端瘫痪时仍持续告警)
+			// 到期兜底检查独立于安装链路(12.1 节:签发端瘫痪时仍持续告警)
 			checkExpiry(cfg, alerter, certutil.Leaf(certs), tgt.Domain)
 		}
 	}
@@ -106,7 +106,7 @@ func pullTarget(cfg *config.Config, st *store.Store, alerter *alert.Sender, key 
 	}
 	certPEM, err := cryptoutil.Decrypt(key, certEnc)
 	if err != nil {
-		// 密钥不对/密文损坏:保留旧证书,告警(§13 过渡期行为)
+		// 密钥不对/密文损坏:保留旧证书,告警(13 节过渡期行为)
 		alerter.Send(alert.NewEvent("install_fail", "error", alert.Hostname(), tgt.Domain,
 			"解密失败(主密钥不一致或密文损坏,已保留本地旧证书): "+err.Error()))
 		return err
@@ -118,14 +118,14 @@ func pullTarget(cfg *config.Config, st *store.Store, alerter *alert.Sender, key 
 		return err
 	}
 
-	// §7.1 校验链(2~5 条在 ValidateChain 内)
+	// 7.1 节校验链(2~5 条在 ValidateChain 内)
 	leaf, err := certutil.ValidateChain(certPEM, keyPEM, tgt.Domain, now())
 	if err != nil {
 		alerter.Send(alert.NewEvent("install_fail", "error", alert.Hostname(), tgt.Domain,
 			"校验链失败(已保留本地旧证书): "+err.Error()))
 		return err
 	}
-	// §7.1 第 6 条:指纹必须与 meta 一致(防半更新)
+	// 7.1 节第 6 条:指纹必须与 meta 一致(防半更新)
 	if got := certutil.Fingerprint(leaf); got != meta.Fingerprint {
 		err := fmt.Errorf("证书指纹与 meta.json 不一致(半更新状态): got %s want %s", got, meta.Fingerprint)
 		alerter.Send(alert.NewEvent("install_fail", "error", alert.Hostname(), tgt.Domain, err.Error()))
@@ -145,7 +145,7 @@ func pullTarget(cfg *config.Config, st *store.Store, alerter *alert.Sender, key 
 	if err != nil {
 		detail := err.Error()
 		if errors.Is(err, deploy.ErrProbeMismatch) {
-			// §7.2 例外:文件已过全部校验,不回滚,只告警
+			// 7.2 节例外:文件已过全部校验,不回滚,只告警
 			detail += "(文件已保留,请检查 nginx 配置引用路径/reload 是否生效)"
 		}
 		alerter.Send(alert.NewEvent("install_fail", "error", alert.Hostname(), tgt.Domain, detail))
@@ -158,7 +158,7 @@ func pullTarget(cfg *config.Config, st *store.Store, alerter *alert.Sender, key 
 	return nil
 }
 
-// checkExpiry 剩余天数低于 expire_alert_days 每轮都告警(§12.1 兜底生命线:
+// checkExpiry 剩余天数低于 expire_alert_days 每轮都告警(12.1 节兜底生命线:
 // 即使签发端整体瘫痪,业务机仍持续喊"快过期")。
 func checkExpiry(cfg *config.Config, alerter *alert.Sender, leaf *x509.Certificate, domain string) {
 	if d := certutil.RemainingDays(leaf, now()); d < cfg.Pull.ExpireAlertDays {

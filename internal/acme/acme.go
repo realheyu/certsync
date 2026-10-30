@@ -1,5 +1,5 @@
 // Package acme 封装 lego v5:账户管理、alidns DNS-01、Obtain(Bundle: true 取 fullchain)。
-// 注意:ObtainRequest 必须 Bundle: true,否则 res.Certificate 只含叶子证书,链不完整(§10)。
+// 注意:ObtainRequest 必须 Bundle: true,否则 res.Certificate 只含叶子证书,链不完整(10 节)。
 package acme
 
 import (
@@ -25,7 +25,7 @@ import (
 	"github.com/hy/certsync/internal/config"
 )
 
-// LEDirectoryStaging LE 测试环境(--staging 默认覆盖,§3)。
+// LEDirectoryStaging LE 测试环境(--staging 默认覆盖,3 节)。
 func LEDirectoryStaging() string {
 	u, err := lego.GetDirectoryURL(lego.CodeLetsEncryptStaging)
 	if err != nil {
@@ -44,7 +44,7 @@ func (u *user) GetEmail() string                        { return u.email }
 func (u *user) GetRegistration() *acme.ExtendedAccount  { return u.reg }
 func (u *user) GetPrivateKey() crypto.Signer            { return u.key }
 
-// Obtain 申领证书并落盘 state;stateDir 由调用方决定(--staging 传独立子目录,§3)。
+// Obtain 申领证书并落盘 state;stateDir 由调用方决定(--staging 传独立子目录,3 节)。
 func Obtain(ctx context.Context, cfg config.ACME, stateDir string) (*certificate.Resource, error) {
 	if cfg.Email == "" {
 		return nil, fmt.Errorf("acme.email 未配置")
@@ -71,7 +71,7 @@ func Obtain(ctx context.Context, cfg config.ACME, stateDir string) (*certificate
 		return nil, fmt.Errorf("创建 ACME 客户端: %w", err)
 	}
 
-	// DNS-01:alidns provider 读 ALICLOUD_ACCESS_KEY / ALICLOUD_SECRET_KEY 环境变量(§8)
+	// DNS-01:alidns provider 读 ALICLOUD_ACCESS_KEY / ALICLOUD_SECRET_KEY 环境变量(8 节)
 	provider, err := alidns.NewDNSProvider()
 	if err != nil {
 		return nil, fmt.Errorf("初始化 alidns provider(检查 ALICLOUD_* 环境变量): %w", err)
@@ -86,7 +86,7 @@ func Obtain(ctx context.Context, cfg config.ACME, stateDir string) (*certificate
 
 	res, err := client.Certificate.Obtain(ctx, certificate.ObtainRequest{
 		Domains: cfg.Domains,
-		Bundle:  true, // §10:必须,取叶子+中间的 fullchain
+		Bundle:  true, // 10 节:必须,取叶子+中间的 fullchain
 		KeyType: certcrypto.EC256,
 	})
 	if err != nil {
@@ -100,7 +100,7 @@ func Obtain(ctx context.Context, cfg config.ACME, stateDir string) (*certificate
 }
 
 // ensureRegistration:已有账户先解析(幂等),否则注册;ZeroSSL 等 EAB CA 走
-// RegisterWithExternalAccountBinding(§8 acme.eab)。
+// RegisterWithExternalAccountBinding(8 节 acme.eab)。
 func ensureRegistration(ctx context.Context, client *lego.Client, u *user, cfg config.ACME, stateDir string) error {
 	if u.reg != nil {
 		return nil
@@ -129,12 +129,12 @@ func ensureRegistration(ctx context.Context, client *lego.Client, u *user, cfg c
 	return saveUser(stateDir, u)
 }
 
-// StateCertDir state 下证书目录:<stateDir>/certs/<primary_domain>(§6.5)。
+// StateCertDir state 下证书目录:<stateDir>/certs/<primary_domain>(6.5 节)。
 func StateCertDir(stateDir, primaryDomain string) string {
 	return filepath.Join(stateDir, "certs", primaryDomain)
 }
 
-// SaveResource 落盘 fullchain.pem / privkey.pem / resource.json(命名三方一致,§6.5)。
+// SaveResource 落盘 fullchain.pem / privkey.pem / resource.json(命名三方一致,6.5 节)。
 func SaveResource(stateDir, primaryDomain string, res *certificate.Resource) error {
 	dir := StateCertDir(stateDir, primaryDomain)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -172,7 +172,7 @@ func accountDir(stateDir, email string) string {
 	return filepath.Join(stateDir, "accounts", email)
 }
 
-// loadOrCreateUser 账户私钥存在则复用;丢失 = 重新生成(重新注册,§6.5)。
+// loadOrCreateUser 账户私钥存在则复用;丢失 = 重新生成(重新注册,6.5 节)。
 func loadOrCreateUser(stateDir, email string) (*user, error) {
 	dir := accountDir(stateDir, email)
 	keyPath := filepath.Join(dir, "account.key")

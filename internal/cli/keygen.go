@@ -12,7 +12,7 @@ func newKeygenCmd() *cobra.Command {
 	var out string
 	cmd := &cobra.Command{
 		Use:   "keygen",
-		Short: "生成 32 字节主密钥(base64 写入 0600 文件,带外分发,§3)",
+		Short: "生成 32 字节主密钥(base64 写入 0600 文件,带外分发,3 节)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if out == "" {
 				return fmt.Errorf("必须指定 --out")

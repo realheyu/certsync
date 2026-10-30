@@ -1,5 +1,5 @@
 // Package certutil 证书解析与校验:指纹、SAN 通配匹配、密钥配对、
-// fullchain 结构、有效期与续期窗口(§7.1 校验链的实现)。
+// fullchain 结构、有效期与续期窗口(7.1 节校验链的实现)。
 package certutil
 
 import (
@@ -20,7 +20,7 @@ import (
 	"time"
 )
 
-// Fingerprint 返回证书 DER 的 SHA-256 十六进制指纹(全网唯一比对依据,§4)。
+// Fingerprint 返回证书 DER 的 SHA-256 十六进制指纹(全网唯一比对依据,4 节)。
 func Fingerprint(cert *x509.Certificate) string {
 	sum := sha256.Sum256(cert.Raw)
 	return hex.EncodeToString(sum[:])
@@ -51,7 +51,7 @@ func ParseCertificates(pemBytes []byte) ([]*x509.Certificate, error) {
 	return certs, nil
 }
 
-// ValidateFullchain 校验 §7.1 第 2 条:首块为叶子证书,且至少含一张中间证书。
+// ValidateFullchain 校验 7.1 节第 2 条:首块为叶子证书,且至少含一张中间证书。
 // (兜住 Bundle 未开启/链不完整的错误签发。)
 func ValidateFullchain(certs []*x509.Certificate) error {
 	if len(certs) < 2 {
@@ -84,7 +84,7 @@ func ParsePrivateKey(pemBytes []byte) (crypto.PrivateKey, error) {
 	return nil, errors.New("无法识别的私钥格式(支持 EC/RSA/PKCS8)")
 }
 
-// KeyPairMatches 校验证书与私钥配对:双方公钥逐位相等(§7.1 第 5 条)。
+// KeyPairMatches 校验证书与私钥配对:双方公钥逐位相等(7.1 节第 5 条)。
 func KeyPairMatches(cert *x509.Certificate, key crypto.PrivateKey) bool {
 	type public interface{ Equal(crypto.PublicKey) bool }
 	var keyPub public
@@ -105,7 +105,7 @@ func KeyPairMatches(cert *x509.Certificate, key crypto.PrivateKey) bool {
 	return certPub.Equal(keyPub)
 }
 
-// MatchSAN 校验证书 SAN 覆盖目标域名:精确匹配或通配匹配一层子域(§7.1 第 4 条)。
+// MatchSAN 校验证书 SAN 覆盖目标域名:精确匹配或通配匹配一层子域(7.1 节第 4 条)。
 // "*.example.com" 匹配 "a.example.com",不匹配 "a.b.example.com" 与 "example.com"。
 func MatchSAN(cert *x509.Certificate, domain string) bool {
 	domain = strings.ToLower(strings.TrimSuffix(domain, "."))
@@ -131,7 +131,7 @@ func MatchSAN(cert *x509.Certificate, domain string) bool {
 	return false
 }
 
-// TimeWindow 校验当前时间在 not_before ~ not_after 内(§7.1 第 3 条)。
+// TimeWindow 校验当前时间在 not_before ~ not_after 内(7.1 节第 3 条)。
 func TimeWindow(cert *x509.Certificate, now time.Time) error {
 	if now.Before(cert.NotBefore) {
 		return fmt.Errorf("证书尚未生效(NotBefore %s)", cert.NotBefore.UTC().Format(time.RFC3339))
@@ -142,7 +142,7 @@ func TimeWindow(cert *x509.Certificate, now time.Time) error {
 	return nil
 }
 
-// RenewalDue 判断是否进入续期窗口:剩余有效期 < beforeDays(§3 renew)。
+// RenewalDue 判断是否进入续期窗口:剩余有效期 < beforeDays(3 节 renew)。
 func RenewalDue(cert *x509.Certificate, beforeDays int, now time.Time) bool {
 	return now.AddDate(0, 0, beforeDays).After(cert.NotAfter)
 }
@@ -161,7 +161,7 @@ func NewKey() (crypto.PrivateKey, error) {
 	return ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 }
 
-// ValidateChain 执行 §7.1 校验链第 2~5 条(解密在 cryptoutil,指纹比对在调用方)。
+// ValidateChain 执行 7.1 节校验链第 2~5 条(解密在 cryptoutil,指纹比对在调用方)。
 func ValidateChain(fullchainPEM, keyPEM []byte, domain string, now time.Time) (*x509.Certificate, error) {
 	certs, err := ParseCertificates(fullchainPEM)
 	if err != nil {
