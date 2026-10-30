@@ -43,7 +43,7 @@ install -m 644 deploy/config.example.toml /etc/certsync/config.toml
 install -m 600 deploy/certsync.env.example /etc/certsync/certsync.env   # 按角色填 AK/SK
 
 # 3. 部署 systemd 单元并启用 timer
-#    签发机:certsync-renew + certsync-fail@
+#    签发机:certsync-renew + certsync-backup + certsync-fail@
 #    业务机:certsync-pull  + certsync-fail@
 cp deploy/*.service deploy/*.timer /etc/systemd/system/
 systemctl daemon-reload && systemctl enable --now certsync-renew.timer  # 业务机: certsync-pull.timer
