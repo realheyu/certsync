@@ -1,0 +1,7 @@
+[Unit]
+Description=certsync - backup issuer state (§6.5)
+After=certsync-renew.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'install -d -m 700 /var/lib/certsync/state-backup && tar -czf /var/lib/certsync/state-backup/$(date -u +%%Y%%m%%dT%%H%%M%%SZ).tar.gz -C /var/lib/certsync accounts certs && ls -1t /var/lib/certsync/state-backup/*.tar.gz | tail -n +15 | xargs -r rm -f'

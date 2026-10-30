@@ -1,0 +1,7 @@
+[Unit]
+Description=certsync failure hook for %i
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/certsync/certsync.env
+ExecStart=/usr/local/bin/certsync on-failure %i

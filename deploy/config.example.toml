@@ -1,0 +1,66 @@
+# certsync 配置模板(§8)——按机器角色裁剪后放 /etc/certsync/config.toml(0644)
+# 敏感凭证一律走 /etc/certsync/certsync.env(0600),本文件可提交配置仓库
+
+# ─── 签发机 ───────────────────────────────────────────────
+[acme]
+ca_server = ""             # 空 = Let's Encrypt 正式;--staging 覆盖为测试环境
+email = "ops@example.com"
+domains = ["example.com", "*.example.com"]  # 第一个域名为存储主键
+renew_before_days = 30     # 剩余天数低于此值触发续期
+
+[acme.eab]                 # ZeroSSL 等需要外部账户绑定的 CA 才填
+kid = ""
+hmac = ""
+
+[alidns]                   # 仅签发机需要;留空则读环境变量
+access_key = ""            # env: ALICLOUD_ACCESS_KEY
+secret_key = ""            # env: ALICLOUD_SECRET_KEY
+
+# ─── 通用 ─────────────────────────────────────────────────
+[oss]
+endpoint = "oss-cn-hangzhou.aliyuncs.com"
+region = "cn-hangzhou"     # V2 SDK 必填(V4 签名用)
+bucket = "my-cert-bucket"
+prefix = "certsync"        # --staging 时强制替换为 certsync-staging(§3)
+access_key = ""            # env: OSS_ACCESS_KEY_ID(签发机=上传账号,业务机=拉取账号)
+secret_key = ""            # env: OSS_ACCESS_KEY_SECRET
+
+[crypto]
+key_file = "/etc/certsync/certsync.key"    # 或 env: CERTSYNC_KEY(base64,优先)
+
+[state]
+dir = "/var/lib/certsync"
+lock_file = "/run/certsync.lock"
+
+# ─── 业务机 ───────────────────────────────────────────────
+[pull]
+check_cmd  = ["nginx", "-t"]               # 空数组 = 跳过检查(不建议)
+reload_cmd = ["systemctl", "reload", "nginx"]
+backup_dir = "/var/lib/certsync/backup"
+expire_alert_days = 15                     # 剩余低于此值,每轮 pull 都告警
+# post_reload_probe = false                # 默认开:reload 后本机探测服务证书指纹(§7.2)
+
+[[pull.targets]]                           # 数组段,多证书组时重复此块(§16)
+domain = "example.com"                     # 必须等于 acme.domains[0]
+cert_file = "/etc/nginx/certs/example.com/fullchain.pem"   # 落地路径可按环境调整
+key_file  = "/etc/nginx/certs/example.com/privkey.pem"
+
+# ─── 告警(多通道:已配置的通道并行扇出;全空 = 不告警)────
+[alert.webhook]            # 通用 JSON POST(自建接收端;不用就整段删除)
+url = ""
+
+[alert.webhook.headers]    # 自定义请求头(鉴权 token 等)
+# Authorization = "Bearer xxx"
+
+[alert.dingtalk]           # 钉钉群自定义机器人
+webhook = ""               # https://oapi.dingtalk.com/robot/send?access_token=…
+secret = ""                # env: DINGTALK_SECRET(机器人安全设置选"加签"时必填)
+at_mobiles = []
+
+[alert.mail]               # SMTP 邮件
+host = ""                  # 例 smtp.example.com
+port = 465                 # 465=隐式TLS / 587=STARTTLS / 25=仅限内网中继
+username = ""              # env: ALERT_MAIL_USER
+password = ""              # env: ALERT_MAIL_PASS
+from = "certsync@example.com"
+to = ["ops@example.com"]

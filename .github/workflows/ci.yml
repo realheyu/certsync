@@ -1,0 +1,66 @@
+# CI(§9):push/PR 跑测试与 lint;打 tag 触发发布产物(§11.1)
+# TODO(Phase 0):pebble + challtestsrv 本地 ACME E2E 任务
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.x"
+          cache: true
+      - run: go vet ./...
+      - run: go test -race ./...
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.x"
+          cache: true
+      - run: go run honnef.co/go/tools/cmd/staticcheck@latest ./...
+      - run: go run github.com/securego/gosec/v2/cmd/gosec@latest -quiet ./...
+      - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, lint]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.x"
+          cache: true
+      - run: make release
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            certsync-linux-amd64
+            certsync-linux-arm64
+            SHA256SUMS
