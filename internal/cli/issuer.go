@@ -47,7 +47,7 @@ func runIssue(cfg *config.Config, staging bool) error {
 		acmeCfg := cfg.ACME
 		acmeCfg.CAServer = caServerFor(cfg, staging)
 		// Obtain 内部已把产物落盘 state,pushLocal 从 state 读取后上传
-		if _, err := acme.Obtain(context.Background(), acmeCfg, stateDirFor(cfg, staging)); err != nil {
+		if _, err := acme.Obtain(context.Background(), acmeCfg, cfg.AliDNS, stateDirFor(cfg, staging)); err != nil {
 			return err
 		}
 		return pushLocal(cfg, staging, "") // 上传刚落盘的产物

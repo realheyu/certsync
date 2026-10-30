@@ -18,6 +18,7 @@ import (
 	"github.com/go-acme/lego/v5/acme"
 	"github.com/go-acme/lego/v5/certcrypto"
 	"github.com/go-acme/lego/v5/certificate"
+	"github.com/go-acme/lego/v5/challenge"
 	"github.com/go-acme/lego/v5/lego"
 	"github.com/go-acme/lego/v5/providers/dns/alidns"
 	"github.com/go-acme/lego/v5/registration"
@@ -45,7 +46,8 @@ func (u *user) GetRegistration() *acme.ExtendedAccount  { return u.reg }
 func (u *user) GetPrivateKey() crypto.Signer            { return u.key }
 
 // Obtain 申领证书并落盘 state;stateDir 由调用方决定(--staging 传独立子目录,3 节)。
-func Obtain(ctx context.Context, cfg config.ACME, stateDir string) (*certificate.Resource, error) {
+// dnsCfg 来自 alidns 配置段:toml 有值优先,留空则 provider 回落读 ALICLOUD_* 环境变量(8 节)。
+func Obtain(ctx context.Context, cfg config.ACME, dnsCfg config.AliDNS, stateDir string) (*certificate.Resource, error) {
 	if cfg.Email == "" {
 		return nil, fmt.Errorf("acme.email 未配置")
 	}
@@ -71,10 +73,18 @@ func Obtain(ctx context.Context, cfg config.ACME, stateDir string) (*certificate
 		return nil, fmt.Errorf("创建 ACME 客户端: %w", err)
 	}
 
-	// DNS-01:alidns provider 读 ALICLOUD_ACCESS_KEY / ALICLOUD_SECRET_KEY 环境变量(8 节)
-	provider, err := alidns.NewDNSProvider()
+	// DNS-01:toml 里的 alidns 凭证优先;留空时 provider 自行读环境变量(8 节)
+	var provider challenge.Provider
+	if dnsCfg.AccessKey != "" {
+		pcfg := alidns.NewDefaultConfig()
+		pcfg.APIKey = dnsCfg.AccessKey
+		pcfg.SecretKey = dnsCfg.SecretKey
+		provider, err = alidns.NewDNSProviderConfig(pcfg)
+	} else {
+		provider, err = alidns.NewDNSProvider()
+	}
 	if err != nil {
-		return nil, fmt.Errorf("初始化 alidns provider(检查 ALICLOUD_* 环境变量): %w", err)
+		return nil, fmt.Errorf("初始化 alidns provider(检查 alidns 配置或 ALICLOUD_* 环境变量): %w", err)
 	}
 	if err := client.Challenge.SetDNS01Provider(provider); err != nil {
 		return nil, fmt.Errorf("挂载 DNS-01: %w", err)
