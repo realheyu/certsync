@@ -1,0 +1,9 @@
+# certsync 日志轮转(可选,设计 11.2 节)→ 复制为 /etc/logrotate.d/certsync
+# 日志量小(每轮几行),机器少可不装;量大后再上
+/var/log/certsync.log {
+    weekly
+    rotate 8
+    missingok
+    notifempty
+    compress
+}

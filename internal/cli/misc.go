@@ -60,17 +60,17 @@ func newStatusCmd() *cobra.Command {
 
 func newOnFailureCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "on-failure <unit>",
-		Short: "systemd OnFailure 兜底钩子:极短路径,只发 unit_failed 告警(11.2 节)",
+		Use:   "on-failure <job>",
+		Short: "cron 失败兜底钩子:极短路径,只发 job_failed 告警(11.2 节)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := loadConfig()
 			if err != nil {
 				return err
 			}
-			alert.NewSender(cfg.Alert, logger()).Send(alert.NewEvent(
-				"unit_failed", "error", alert.Hostname(), "",
-				"systemd 单元失败: "+args[0]+"(进程内告警未执行,由 OnFailure 钩子发出;详见 journalctl -u "+args[0]))
+			detail := fmt.Sprintf("cron 任务失败: %s,进程内告警未执行或未覆盖该失败,由 || 兜底钩子发出;详见 /var/log/certsync.log", args[0])
+			alert.NewSender(cfg.Alert, logger()).Send(
+				alert.NewEvent("job_failed", "error", alert.Hostname(), "", detail))
 			return nil
 		},
 	}

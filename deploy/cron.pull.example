@@ -1,0 +1,12 @@
+# certsync 业务机 cron(设计 11.2 节)
+# 安装:复制为 /etc/cron.d/certsync(0644 root:root,cron 自动加载,无需重载守护进程)
+# 凭证直填 config.toml(整个文件 0600)最省事;若用 certsync.env,在命令前插 ". /etc/certsync/certsync.env && "
+SHELL=/bin/sh
+PATH=/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# 每 6 小时拉取(指纹相同即跳过);失败由 on-failure 兜底告警
+# 多台业务机:把 41 改成各机不同的分钟(如 11/23/37/49)——错峰等价 timer 的随机延迟,也避免钉钉限流(12.2 节)
+41 */6 * * * root /usr/local/bin/certsync --config /etc/certsync/config.toml pull >>/var/log/certsync.log 2>&1 || /usr/local/bin/certsync --config /etc/certsync/config.toml on-failure pull >>/var/log/certsync.log 2>&1
+
+# 重启后补跑一次(等价 timer 的停机补跑;sleep 120 等网络就绪)
+@reboot root sleep 120 && /usr/local/bin/certsync --config /etc/certsync/config.toml pull >>/var/log/certsync.log 2>&1

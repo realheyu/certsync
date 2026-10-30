@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| 版本 | v0.4(设计定稿,待评审;v0.2:依赖更新/toml/certbot 命名/路径清单;v0.3:验证体系强化/多通道告警;v0.4:OnFailure 兜底、webhook 鉴权头、state 备份机制、CI 定为 GitHub Actions、分发校验定为 SHA256、bucket 免版本控制/访问日志) |
-| 日期 | 2026-10-30 |
+| 版本 | v0.5(设计定稿,待评审;v0.2:依赖更新/toml/certbot 命名/路径清单;v0.3:验证体系强化/多通道告警;v0.4:失败兜底钩子、webhook 鉴权头、state 备份机制、CI 定为 GitHub Actions、分发校验定为 SHA256、bucket 免版本控制/访问日志;v0.5:调度弃 systemd timer 改用 Linux cron(11.2 节重写,含代价对照),敏感凭证支持直填 toml) |
+| 日期 | 2026-10-31 |
 | 状态 | 设计定稿,待评审;通过后进入 Phase 0(15 节) |
 | 读者 | 运维 / 开发 |
 
@@ -61,7 +61,7 @@
 ```
                       ┌────────────────────────── 签发机(1 台)──────────────────────────┐
                       │                                                                │
-  systemd timer 每日  │  certsync renew                                                │
+  cron 每日           │  certsync renew                                                │
   ─────────────────►  │   ├─ 读本地证书,剩余 > renew_before_days? → 跳过退出           │
                       │   ├─ lego / ACME CA(LE 或 ZeroSSL,DNS-01)                    │
                       │   │    └─ 阿里云 DNS API 写 TXT 记录(仅此机器持有该密钥)      │
@@ -81,7 +81,7 @@
       ┌──────────────────────────────────────────────┼──────────────────────────────────────────────┐
       ▼                                              ▼                                              ▼
 ┌───── 业务机 A(nginx)─────┐              ┌───── 业务机 B(nginx)─────┐                    ┌──── 业务机 N ────┐
-│ systemd timer 每 6 小时   │              │                          │                    │                  │
+│ cron 每 6 小时            │              │                          │                    │                  │
 │ certsync pull            │              │ certsync pull(同左)      │                    │ certsync pull    │
 │  ├─ 读 meta.json         │              └──────────────────────────┘                    └──────────────────┘
 │  ├─ 指纹相同? → 跳过     │
@@ -96,8 +96,8 @@
 
 | 角色 | 机器 | 命令 | 触发 |
 |---|---|---|---|
-| 签发 | 1 台 | `certsync renew` | systemd timer,每日 |
-| 拉取部署 | N 台 | `certsync pull` | systemd timer,每 6 小时 |
+| 签发 | 1 台 | `certsync renew` | cron,每日 |
+| 拉取部署 | N 台 | `certsync pull` | cron,每 6 小时 + `@reboot` |
 | 运维(手动) | 任意 | `keygen` / `issue` / `push` / `status` / `version` | 手动 |
 
 ### 命令一览
@@ -106,9 +106,9 @@
 |---|---|---|
 | `certsync keygen --out <file>` | 生成 32 字节主密钥(base64 写入 0600 文件) | 初始化、密钥轮换 |
 | `certsync issue` | 强制向 CA 申请新证书并落盘、加密上传 | 首次部署、测试(`--staging`) |
-| `certsync renew` | 检查剩余有效期,到窗口才触发 issue;否则直接退出 | 每日 timer |
+| `certsync renew` | 检查剩余有效期,到窗口才触发 issue;否则直接退出 | 每日 cron |
 | `certsync push` | 不联系 CA,把本地 state 里的证书重新加密上传 | OSS 对象误删修复、换密钥后重加密 |
-| `certsync pull [--domain x]` | 拉取、校验、安装、reload | 各业务机 timer |
+| `certsync pull [--domain x]` | 拉取、校验、安装、reload | 各业务机 cron |
 | `certsync status` | 打印各 target 本地证书的域名、到期时间、剩余天数 | 人工巡检 |
 | `certsync version` | 输出版本(编译时注入) | 排查多机版本 |
 
@@ -245,10 +245,10 @@
 |---|---|---|---|---|
 | `/usr/local/bin/certsync` | 0755 root | 二进制 | 部署/升级(11.1 节) | oneshot 形态,替换即升级 |
 | `/etc/certsync/config.toml` | 0644 root | 配置 | 人工 | 不含密钥值,可入配置仓库 |
-| `/etc/certsync/certsync.env` ★ | 0600 root | AK/SK、钉钉加签密钥、邮箱密码等敏感环境变量 | 人工 | systemd `EnvironmentFile` 注入(11.2 节) |
+| `/etc/certsync/certsync.env` ★ | 0600 root | AK/SK、钉钉加签密钥、邮箱密码等敏感环境变量 | 人工 | cron 行 source 注入(11.2 节);凭证也可直填 config.toml(8 节,整个文件降 0600) |
 | `/etc/certsync/certsync.key` ★ | 0600 root | AES 主密钥(base64) | 带外分发 | 轮换见 6.4 节;env `CERTSYNC_KEY` 优先 |
 | `/run/certsync.lock` | — | flock 锁 | 每次运行 | 仅锁不含数据;tmpfs,重启自清 |
-| stdout | — | 日志(slog 文本) | 每次运行 | journald 收集,不另落日志文件(12.3 节) |
+| `/var/log/certsync.log` | 0644 root | 日志(slog 文本 + 命令输出) | cron 重定向 | 不经 journald,轮转见 11.2 节 |
 
 **签发机 state(`/var/lib/certsync/`,整体 0700,定期打包备份——恢复能力见 13 节)**
 
@@ -263,7 +263,7 @@
     └── resource.json    0644  # lego Resource 存档(CertURL 等,吊销时用)
 ```
 
-签发机本地只保留当前版本;历史兜底由 `certsync-backup` 的每日快照(保留 14 份,含 certs/)与 `push` 重建(13 节)承担,不依赖 OSS 版本控制。文件名与 OSS 明文体、业务机落地体三方同名,排查时一眼对上。
+签发机本地只保留当前版本;历史兜底由签发机备份 cron 行的每日快照(保留 14 份,含 certs/,11.2 节)与 `push` 重建(13 节)承担,不依赖 OSS 版本控制。文件名与 OSS 明文体、业务机落地体三方同名,排查时一眼对上。
 
 **state 备份机制**:签发机部署 `certsync-backup.{service,timer}`(11.2 节),每日将 `accounts/` 与 `certs/` tar 打包到 `/var/lib/certsync/state-backup/`,保留最近 14 份;该目录再由现有备份体系/异地同步带走。13 节的两条签发机恢复路径(有备份/无备份)都以它为前提——备份不做,重建就只剩重新注册账户一条路。
 
@@ -312,7 +312,7 @@
 
 ### 7.3 并发与幂等
 
-- 每台机器 `flock /run/certsync.lock`(LOCK_EX | LOCK_NB),抢不到锁直接退出——timer 重叠/手工与 timer 并发都安全
+- 每台机器 `flock /run/certsync.lock`(LOCK_EX | LOCK_NB),抢不到锁直接退出——cron 重叠/手工与 cron 并发都安全
 - 指纹相同即跳过所有写操作——重复执行零副作用
 - 签发端 renew 到窗口外直接退出,不产生 ACME 订单——避免无谓消耗限额
 
@@ -399,7 +399,7 @@ from = "certsync@example.com"
 to = ["ops@example.com"]
 ```
 
-配置加载顺序:toml 值 → 空则取环境变量(表内标注)→ 仍空报错退出。密文级敏感值**建议全部走环境变量**(由 systemd `EnvironmentFile=/etc/certsync/certsync.env` 注入,0600),toml 可提交到配置仓库。
+配置加载顺序:toml 值 → 空则取环境变量(表内标注)→ 仍空报错退出。敏感值两种放法:① **直填 toml**——整个 config.toml 降为 0600,不可再入配置仓库(单机/开发推荐);② 拆到 `/etc/certsync/certsync.env`(0600,cron 行前缀 `. /etc/certsync/certsync.env && ` 注入,11.2 节),toml 保持无密钥可入库(多机生产推荐)。
 
 ---
 
@@ -413,7 +413,7 @@ to = ["ops@example.com"]
 | 加密 | 标准库 `crypto/aes` + `cipher.NewGCM` | — | 见 6.1 节 |
 | CLI | `github.com/spf13/cobra` | v1.10.2 | 子命令 + flag |
 | 配置 | `github.com/BurntSushi/toml` | v1.6.0 | 仅解码(配置只读不写);零第三方依赖,事实标准 |
-| 日志 | 标准库 `log/slog` | — | 文本格式到 stdout,由 journal 收集 |
+| 日志 | 标准库 `log/slog` | — | 文本格式到 stdout,cron 重定向到 /var/log/certsync.log(11.2 节) |
 | 邮件告警 | 标准库 `net/smtp` | — | 465 隐式 TLS 自行 tls.Dial 后接 NewClient,几十行;不引第三方库 |
 | 文件锁 | `golang.org/x/sys/unix` `Flock` | v0.49.0 | |
 | 重试 | 自实现 20 行指数退避 | — | 减少供应链面 |
@@ -440,8 +440,9 @@ certsync/
 │   ├── deploy/                # 原子替换、备份、check/reload、回滚
 │   └── alert/                 # webhook 通知
 ├── deploy/
-│   ├── certsync-renew.service / certsync-renew.timer      # 签发机
-│   ├── certsync-pull.service / certsync-pull.timer        # 业务机
+│   ├── cron.issuer.example      # 签发机 /etc/cron.d/certsync 模板(renew + state 备份)
+│   ├── cron.pull.example        # 业务机模板(pull 每 6 小时 + @reboot 补跑)
+│   ├── logrotate.example        # /etc/logrotate.d/certsync 模板(可选)
 │   ├── config.example.toml
 │   └── certsync.env.example
 ├── Makefile
@@ -459,63 +460,55 @@ certsync/
 - 存放于同一 OSS Bucket 的 `dist/` 前缀(走拉取账号的只读权限之外单独授权,或直接复用手工分发)
 - 安装脚本:下载 → sha256 校验 → `install -m 755` 到 `/usr/local/bin/certsync` → `certsync version`
 - 校验体系有意保持 SHA256 单层、不引入签名:**同源替换风险由写权限隔离兜底**——certs/ 与 dist/ 前缀的上传凭证相互独立(6.2 节上传账号仅可写 certs/),攻破任一凭证都换不掉另一前缀的内容
-- 升级:替换二进制即可(oneshot/timer 形态无常驻进程,下一轮 timer 自动用新版);多机版本差异通过 `certsync version` 巡检
+- 升级:替换二进制即可(cron oneshot 形态无常驻进程,下一轮 cron 自动用新版);多机版本差异通过 `certsync version` 巡检
 
-### 11.2 systemd 单元
+### 11.2 cron 部署
 
-签发机 `/etc/systemd/system/certsync-renew.{service,timer}`:
+调度统一用 Linux cron(`/etc/cron.d/` drop-in,0644 root:root,crond 自动加载、无需重载),**不引入 systemd 单元**——保持简单,任何发行版行为一致,与 acme.sh 原有形态同类。所弃 systemd 能力的代价与补偿见 11.2.1 对照表。
 
-```ini
-# service
-[Unit]
-Description=certsync - renew ACME certificate
-After=network-online.target
-Wants=network-online.target
-OnFailure=certsync-fail@%n.service
+签发机 `/etc/cron.d/certsync`(模板 `deploy/cron.issuer.example`):
 
-[Service]
-Type=oneshot
-EnvironmentFile=-/etc/certsync/certsync.env
-ExecStart=/usr/local/bin/certsync renew
+```cron
+SHELL=/bin/sh
+PATH=/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# 每日 03:23 续期检查(到窗口才签发);失败由 on-failure 兜底告警
+23 3 * * * root /usr/local/bin/certsync --config /etc/certsync/config.toml renew >>/var/log/certsync.log 2>&1 || /usr/local/bin/certsync --config /etc/certsync/config.toml on-failure renew >>/var/log/certsync.log 2>&1
+
+# 每日 04:33 state 备份(6.5 节):打包 accounts/ + certs/ 到 state-backup/,保留最近 14 份
+# 注意:crontab 里 % 是换行语义,date 格式串必须写成 \%
+33 4 * * * root install -d -m 700 /var/lib/certsync/state-backup && tar -czf /var/lib/certsync/state-backup/$(date -u +\%Y\%m\%dT\%H\%M\%SZ).tar.gz -C /var/lib/certsync accounts certs && ls -1t /var/lib/certsync/state-backup/*.tar.gz | tail -n +15 | xargs -r rm -f >>/var/log/certsync.log 2>&1
 ```
 
-```ini
-# timer
-[Timer]
-OnCalendar=daily
-RandomizedDelaySec=30m
-Persistent=true
+业务机 `/etc/cron.d/certsync`(模板 `deploy/cron.pull.example`):
 
-[Install]
-WantedBy=timers.target
+```cron
+SHELL=/bin/sh
+PATH=/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# 每 6 小时拉取(指纹相同即跳过);失败由 on-failure 兜底告警
+# 多台业务机把 41 改成各机不同的分钟(如 11/23/37/49)——错峰,也避免钉钉限流(12.2 节)
+41 */6 * * * root /usr/local/bin/certsync --config /etc/certsync/config.toml pull >>/var/log/certsync.log 2>&1 || /usr/local/bin/certsync --config /etc/certsync/config.toml on-failure pull >>/var/log/certsync.log 2>&1
+
+# 重启后补跑一次(等价 timer 的停机补跑;sleep 120 等网络就绪)
+@reboot root sleep 120 && /usr/local/bin/certsync --config /etc/certsync/config.toml pull >>/var/log/certsync.log 2>&1
 ```
 
-业务机 `certsync-pull.{service,timer}`:同结构,`ExecStart=/usr/local/bin/certsync pull`,timer 为:
+要点:
 
-```ini
-[Timer]
-OnBootSec=10min
-OnUnitActiveSec=6h
-RandomizedDelaySec=10min
-Persistent=true
-```
+- **失败兜底**(主流程因配置错/网络不通/二进制损坏而失败时,进程内告警代码可能根本没执行到):命令尾部 `|| certsync on-failure <renew|pull>` 补一刀,发 `job_failed` 事件(12.1 节)。可能与进程内告警重复(同一故障收到两条),刻意为之——宁可重复不可漏报。`on-failure` 保持极短代码路径:只读告警配置、发送事件,不触碰 ACME/OSS/deploy 任何逻辑。二进制整体缺失时钩子同样起不来,但 `/var/log/certsync.log` 与 cron 邮件(`MAILTO`)留痕可巡检(12.3 节),业务侧另有 `expiry_warning` 生命线(12.1 节)——三层兜底互不依赖
+- **日志**:cron 不经 journald,所有行显式重定向 `/var/log/certsync.log`;日志量小(每轮几行),量产后可加 `deploy/logrotate.example` → `/etc/logrotate.d/certsync`
+- **凭证注入**:cron 环境干净,两条路——① 直填 config.toml(整个文件 0600,8 节),推荐,最省事;② 保持 env 拆分时,命令前插 `. /etc/certsync/certsync.env && `(文件必须存在,否则整行失败)
+- **crontab 语法坑**:`%` 在 crontab 是换行语义,date 格式串必须 `\%`;全部用绝对路径(cron 的 PATH 与登录 shell 不同)
 
-业务机 pull 的 service 同样挂 `OnFailure=certsync-fail@%n.service`。**失败兜底单元**(主流程因配置错/网络不通/二进制损坏而失败时,进程内告警代码可能根本没执行到,由 systemd 层补一刀):
+#### 11.2.1 弃 systemd timer 的代价与补偿
 
-```ini
-# certsync-fail@.service(模板单元)
-[Unit]
-Description=certsync failure hook for %i
-
-[Service]
-Type=oneshot
-EnvironmentFile=-/etc/certsync/certsync.env
-ExecStart=/usr/local/bin/certsync on-failure %i
-```
-
-`certsync on-failure` 是刻意保持极短的代码路径:只读告警配置、发送 `unit_failed` 事件,不触碰 ACME/OSS/deploy 任何逻辑。二进制整体缺失时此钩子同样起不来,但 systemd 在 journal 留痕可巡检(12.3 节),业务侧另有 `expiry_warning` 生命线(12.1 节)——三层兜底互不依赖。
-
-签发机另部署 `certsync-backup.{service,timer}`(每日打包 state 到 `/var/lib/certsync/state-backup/`,保留最近 14 份,机制见 6.5 节)。
+| 失去的 systemd 能力 | cron 侧补偿 | 剩余风险 |
+|---|---|---|
+| `Persistent=true` 停机补跑 | renew 本就每日跑,停机错过则次日自动再试(续期窗口 30 天,损失一天无影响);pull 由 `@reboot` 行补跑 | 停机跨多日时 renew 少跑几轮,可忽略 |
+| `network-online.target` | OSS 请求自带重试(7.4 节);`@reboot` 行 sleep 120;ACME 失败次日再试 + `issue_fail` 每日重试告警 | 开机 2 分钟内网络仍未就绪则该轮放弃,下轮再来 |
+| `RandomizedDelaySec` 随机错峰 | 各机 cron 分钟数手工错开 | 单签发机无随机需求;业务机 >20 台时需认真分配分钟段 |
+| journald 统一日志/失败留痕 | 显式重定向日志文件 + `job_failed` 钩子 + `expiry_warning` 生命线 | 多一个日志文件要管理(logrotate 可选) |
 
 ### 11.3 单机安装清单
 
@@ -523,10 +516,10 @@ ExecStart=/usr/local/bin/certsync on-failure %i
 2. `/etc/certsync/config.toml`(0644,按角色裁剪)
 3. `/etc/certsync/certsync.env`(0600,RAM AK/SK、ALICLOUD AK/SK、钉钉加签密钥、邮箱密码)
 4. `/etc/certsync/certsync.key`(0600,带外分发)
-5. `mkdir -p /var/lib/certsync`(0700);确认 NTP 运行中
-6. 按角色 enable 对应 timer
+5. `mkdir -p /var/lib/certsync`(0700);确认 NTP 与 cron 守护进程运行中
+6. 按角色安装调度:`cp deploy/cron.<issuer|pull>.example /etc/cron.d/certsync`(0644 root:root);可选 `cp deploy/logrotate.example /etc/logrotate.d/certsync`
 
-`certsync.env` 只放 config.toml 中标注了 env 回退的敏感值,一行一个 `KEY=value`(systemd EnvironmentFile 语法)。两类机器**变量名相同、值必须是不同 RAM 账号**(上传/拉取),严禁一份拷全网;`CERTSYNC_KEY` 虽可放 env 且优先级更高,但设计默认走独立 key 文件,不放这里:
+`certsync.env` 只放 config.toml 中标注了 env 回退的敏感值,一行一个 `KEY=value`(sh 可直接 source 的语法,cron 行前缀注入,11.2 节)。两类机器**变量名相同、值必须是不同 RAM 账号**(上传/拉取),严禁一份拷全网;`CERTSYNC_KEY` 虽可放 env 且优先级更高,但设计默认走独立 key 文件,不放这里:
 
 ```bash
 # ── 签发机 ──
@@ -560,6 +553,7 @@ ALERT_MAIL_PASS=…
 | `install_ok` | 业务 | 安装并 reload 成功(指纹变化才发) | info |
 | `install_fail` | 业务 | 校验失败/回滚发生 | error |
 | `expiry_warning` | 业务 | 剩余天数 < expire_alert_days(每轮都发,**这是兜底生命线**) | error |
+| `job_failed` | 两侧 | cron 兜底钩子:任务非零退出且进程内告警未执行/未覆盖时发出(11.2 节,可能与进程内事件重复) | error |
 
 `expiry_warning` 独立于签发链路存在:即使签发端整体瘫痪,各业务机仍会持续喊"证书快过期了",把静默失败变成显式事故预警。
 
@@ -584,7 +578,7 @@ ALERT_MAIL_PASS=…
 - **加签**:机器人安全设置选"加签"时 `secret` 必填,请求需附加 `timestamp`(毫秒)与 `sign`(HMAC-SHA256,密钥与被签串均为 `"<timestamp>\n<secret>"`,结果 base64 后 urlencode)。**timestamp 与钉钉服务器时差超过 1 小时直接拒绝——NTP 是硬前提,与 7.5 节证书有效期校验共用同一依赖**
 - **响应语义**:HTTP 200 ≠ 成功,必须校验 body 的 `errcode == 0`(关键词不匹配、签名错误、限流都以 200 + errcode 返回;实现只看 HTTP 状态码 = 告警静默丢失)
 - **关键词过滤**:机器人若配"自定义关键词",消息文本必须包含该词——告警模板首词固定为 `certsync`,机器人侧把关键词配成 `certsync` 即可
-- **限流**:单机器人 20 条/分钟,超限封禁 10 分钟;各机 timer 已带 `RandomizedDelaySec` 天然错峰,常态足够;机器数 > 20 且同时故障的极端场景需按机房拆多个机器人
+- **限流**:单机器人 20 条/分钟,超限封禁 10 分钟;各机 cron 分钟数手工错开(11.2 节)天然错峰,常态足够;机器数 > 20 且同时故障的极端场景需按机房拆多个机器人
 - 消息用 markdown 类型,`at_mobiles` 非空时带上 @ 列表
 
 企微群机器人与钉钉同构(`[alert.wecom]`,token 参数与格式微差),需要时按钉钉同款方式接入,不影响核心。
@@ -592,7 +586,7 @@ ALERT_MAIL_PASS=…
 ### 12.3 巡检
 
 - `certsync status`:各 target 域名/到期时间/剩余天数
-- `journalctl -u certsync-pull.service --since -24h`
+- `tail -100 /var/log/certsync.log`(cron 全部输出重定向于此,11.2 节;`job_failed` 兜底也依赖它留痕)
 - **外部视角**(巡检的本质是验证 nginx 实际在服务的证书,而非只看磁盘文件):任意外部机器 `openssl s_client -connect <域名>:443 -servername <域名> </dev/null 2>/dev/null | openssl x509 -noout -fingerprint -sha256 -enddate`,与 meta.json 指纹比对
 - **CA 侧独立审计**:证书一旦签发必然进入 CT 日志,`crt.sh/?q=<域名>` 可查——"签发成功"不依赖 certsync 自己的报告
 
@@ -654,8 +648,8 @@ ALERT_MAIL_PASS=…
 
 ### Phase 2:切换
 
-- [ ] `systemctl disable --now` acme.sh 的 cron(保留 acme.sh 安装,作为回滚手段)
-- [ ] 全量业务机接入 pull timer
+- [ ] 注释/删除 acme.sh 的 crontab 行(`crontab -l | grep -v acme.sh | crontab -`;保留 acme.sh 安装,作为回滚手段)
+- [ ] 全量业务机接入 pull cron
 - [ ] 验证 `certsync version` 全网一致、`certsync status` 到期时间正常
 
 ### Phase 3:收尾
@@ -664,7 +658,7 @@ ALERT_MAIL_PASS=…
 
 ### 回滚预案
 
-任意阶段出问题:`systemctl enable --now` 恢复 acme.sh cron + 各机回挂 acme.sh 产物即可。certsync 是纯增量部署,不修改 acme.sh 任何状态,两者可无限期共存。
+任意阶段出问题:恢复被删的 acme.sh crontab 行 + 各机回挂 acme.sh 产物即可。certsync 是纯增量部署,不修改 acme.sh 任何状态,两者可无限期共存。
 
 ---
 

@@ -5,7 +5,7 @@
 ```
 签发机(1 台)                      阿里云 OSS(私有桶)                业务机(N 台)
 certsync renew ──lego/DNS-01──►  certsync/certs/<域名>/  ──pull──►  原子安装 + nginx reload
-每日 timer,到期前 30 天才签         fullchain.pem.enc(加密)           每 6 小时 timer,指纹相同即跳过
+每日 cron,到期前 30 天才签          fullchain.pem.enc(加密)           每 6 小时 cron,指纹相同即跳过
                                   privkey.pem.enc(加密)
                                   meta.json(明文,指纹=版本号)
 ```
@@ -27,7 +27,7 @@ certsync renew ──lego/DNS-01──►  certsync/certs/<域名>/  ──pull�
 | `certsync push` | 不联系 CA,把本地证书重新加密上传(误删恢复/换密钥重加密) |
 | `certsync pull [--domain x]` | 拉取、六重校验、原子安装、reload、探测确认 |
 | `certsync status` | 各证书域名/到期时间/剩余天数 |
-| `certsync on-failure <unit>` | systemd OnFailure 兜底钩子(设计 11.2 节) |
+| `certsync on-failure <job>` | cron 失败兜底钩子(设计 11.2 节) |
 
 ## 快速开始
 
@@ -38,15 +38,14 @@ make build-linux-amd64
 # 1. 生成主密钥,带外放到每台机器 /etc/certsync/certsync.key(0600)
 ./certsync keygen --out certsync.key
 
-# 2. 配置(签发机用 acme/alidns 段,业务机用 pull 段;凭证走 certsync.env)
-install -m 644 deploy/config.example.toml /etc/certsync/config.toml
-install -m 600 deploy/certsync.env.example /etc/certsync/certsync.env   # 按角色填 AK/SK
+# 2. 配置(签发机用 acme/alidns 段,业务机用 pull 段)
+#    凭证两种放法:直填 config.toml(整个文件 0600)或拆到 certsync.env(0600)
+install -m 600 deploy/config.example.toml /etc/certsync/config.toml      # 按角色裁剪并填凭证
+install -m 600 deploy/certsync.env.example /etc/certsync/certsync.env   # 可选:凭证走 env 时
 
-# 3. 部署 systemd 单元并启用 timer
-#    签发机:certsync-renew + certsync-backup + certsync-fail@
-#    业务机:certsync-pull  + certsync-fail@
-cp deploy/*.service deploy/*.timer /etc/systemd/system/
-systemctl daemon-reload && systemctl enable --now certsync-renew.timer  # 业务机: certsync-pull.timer
+# 3. 部署 cron(/etc/cron.d drop-in,crond 自动加载)
+#    签发机:renew 每日 + state 备份;业务机:pull 每 6 小时 + @reboot 补跑
+install -m 644 deploy/cron.issuer.example /etc/cron.d/certsync   # 业务机: cron.pull.example
 
 # 4. 首签(先 staging 验收,再正式)
 certsync issue --staging && certsync issue
@@ -54,4 +53,4 @@ certsync issue --staging && certsync issue
 
 ## 状态
 
-设计定稿 v0.4,待评审;实施计划见设计文档 15 节(Phase 0 验收 → 共存观察 → 切换)。
+设计定稿 v0.5,待评审;实施计划见设计文档 15 节(Phase 0 验收 → 共存观察 → 切换)。

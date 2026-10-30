@@ -41,9 +41,9 @@ type user struct {
 	key   crypto.Signer
 }
 
-func (u *user) GetEmail() string                        { return u.email }
-func (u *user) GetRegistration() *acme.ExtendedAccount  { return u.reg }
-func (u *user) GetPrivateKey() crypto.Signer            { return u.key }
+func (u *user) GetEmail() string                       { return u.email }
+func (u *user) GetRegistration() *acme.ExtendedAccount { return u.reg }
+func (u *user) GetPrivateKey() crypto.Signer           { return u.key }
 
 // Obtain 申领证书并落盘 state;stateDir 由调用方决定(--staging 传独立子目录,3 节)。
 // dnsCfg 来自 alidns 配置段:toml 有值优先,留空则 provider 回落读 ALICLOUD_* 环境变量(8 节)。

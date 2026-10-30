@@ -76,7 +76,7 @@ func caServerFor(cfg *config.Config, staging bool) string {
 	return cfg.ACME.CAServer
 }
 
-// lockInstance flock 抢锁;抢不到直接退出(7.3 节,timer 重叠/手工并发安全)。
+// lockInstance flock 抢锁;抢不到直接退出(7.3 节,cron 重叠/手工并发安全)。
 func lockInstance(lockFile string) (*os.File, error) {
 	if err := os.MkdirAll(filepath.Dir(lockFile), 0o755); err != nil {
 		return nil, err

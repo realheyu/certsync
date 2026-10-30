@@ -25,11 +25,11 @@ type Config struct {
 }
 
 type ACME struct {
-	CAServer        string `toml:"ca_server"`
-	Email           string `toml:"email"`
+	CAServer        string   `toml:"ca_server"`
+	Email           string   `toml:"email"`
 	Domains         []string `toml:"domains"`
-	RenewBeforeDays int    `toml:"renew_before_days"`
-	EAB             EAB    `toml:"eab"`
+	RenewBeforeDays int      `toml:"renew_before_days"`
+	EAB             EAB      `toml:"eab"`
 }
 
 type EAB struct {

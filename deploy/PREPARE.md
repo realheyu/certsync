@@ -18,20 +18,20 @@
 
 ## 三、机器
 
-- [ ] 签发机 ×1:现代 Linux(systemd),无业务,单独使用(6.3 节最高危机器)
+- [ ] 签发机 ×1:Linux + cron 服务(常见发行版默认装,`pgrep cron` 确认),无业务,单独使用(6.3 节最高危机器)
 - [ ] 签发机出网白名单:`api.letsencrypt.org:443` + `acme-staging-v02.api.letsencrypt.org:443`、`alidns.aliyuncs.com:443`、`<bucket>.oss-*.aliyuncs.com:443`、`oapi.dingtalk.com:443`、SMTP 465/587
 - [ ] 签发机 NTP 运行中(`timedatectl status` 确认 NTP synchronized)
-- [ ] 业务机 ×1~2(Phase 1 用非核心机):nginx 已装、`systemctl reload nginx` 可用
+- [ ] 业务机 ×1~2(Phase 1 用非核心机):nginx 已装、`systemctl reload nginx` 可用、cron 服务在跑
 - [ ] 业务机出网:`<bucket>.oss-*.aliyuncs.com:443`(+ 告警地址)
 - [ ] 业务机 NTP 运行中
 - [ ] nginx 配置先行:写入 `ssl_certificate` / `ssl_certificate_key` 路径(与 config.toml 的 pull.targets 一致),`nginx -t` 通过
 
 ## 四、每台机器的运行时文件(代码交付后)
 
-- [ ] `/etc/certsync/config.toml`(0644):从 `deploy/config.example.toml` 裁剪——签发机填 acme(email、domains)+ oss 段;业务机填 oss + pull 段
+- [ ] `/etc/certsync/config.toml`:从 `deploy/config.example.toml` 裁剪——签发机填 acme(email、domains)+ oss 段;业务机填 oss + pull 段。凭证直填时整个文件 0600,拆 env 时 0644(见下一项)
 - [ ] `/etc/certsync/certsync.env`(0600):签发机 = DNS AK/SK + OSS 上传 AK/SK + 告警凭证;业务机 = OSS 拉取 AK/SK + 告警凭证(**同变量名、不同账号,勿拷贝混用**)
 - [ ] `/etc/certsync/certsync.key`(0600):`certsync keygen` 产物,带外分发到**每台**
-- [ ] systemd 单元:签发机 enable `certsync-renew.timer` + `certsync-backup.timer`;业务机 enable `certsync-pull.timer`(均配 `certsync-fail@` 兜底)
+- [ ] cron:签发机 `install -m 644 deploy/cron.issuer.example /etc/cron.d/certsync`(renew 每日 + state 备份);业务机用 `cron.pull.example`(pull 每 6 小时 + `@reboot`,多台错开分钟);可选 `deploy/logrotate.example` → `/etc/logrotate.d/certsync`
 
 ## 五、不需要准备(免查)
 

@@ -108,7 +108,7 @@ func (s *Sender) sendDingTalk(ev Event) error {
 		at = " @" + strings.Join(s.cfg.DingTalk.AtMobiles, " @")
 	}
 	payload := map[string]any{
-		"msgtype": "markdown",
+		"msgtype":  "markdown",
 		"markdown": map[string]string{"title": "certsync " + ev.Event, "text": md + at},
 		"at":       map[string]any{"atMobiles": s.cfg.DingTalk.AtMobiles, "isAtAll": false},
 	}

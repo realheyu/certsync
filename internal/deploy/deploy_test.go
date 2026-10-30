@@ -132,7 +132,7 @@ func TestFirstInstallCheckFailRemovesNew(t *testing.T) {
 		CertFile: filepath.Join(dir, "fullchain.pem"),
 		KeyFile:  filepath.Join(dir, "privkey.pem")}
 	if _, err := Install(tgt, certPEM, keyPEM, Options{
-		CheckCmd: []string{"false"},
+		CheckCmd:  []string{"false"},
 		BackupDir: filepath.Join(dir, "backup"),
 	}); err == nil {
 		t.Fatal("应当失败")
