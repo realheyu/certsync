@@ -32,7 +32,7 @@ certsync renew ──lego/DNS-01──►  certsync/certs/<域名>/  ──pull�
 ## 快速开始
 
 ```bash
-# 构建(或从 OSS dist/ 下载并 cosign 验签)
+# 构建(或从 OSS dist/ 下载并校验 SHA256)
 make build-linux-amd64
 
 # 1. 生成主密钥,带外放到每台机器 /etc/certsync/certsync.key(0600)

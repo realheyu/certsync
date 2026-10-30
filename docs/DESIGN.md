@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| 版本 | v0.4(设计定稿,待评审;v0.2:依赖更新/toml/certbot 命名/路径清单;v0.3:验证体系强化/多通道告警;v0.4:OnFailure 兜底、webhook 鉴权头、state 备份机制、CI 定为 GitHub Actions) |
+| 版本 | v0.4(设计定稿,待评审;v0.2:依赖更新/toml/certbot 命名/路径清单;v0.3:验证体系强化/多通道告警;v0.4:OnFailure 兜底、webhook 鉴权头、state 备份机制、CI 定为 GitHub Actions、分发校验定为 SHA256) |
 | 日期 | 2026-10-30 |
 | 状态 | 设计定稿,待评审;通过后进入 Phase 0(§15) |
 | 读者 | 运维 / 开发 |
@@ -418,7 +418,7 @@ to = ["ops@example.com"]
 | 邮件告警 | 标准库 `net/smtp` | — | 465 隐式 TLS 自行 tls.Dial 后接 NewClient,几十行;不引第三方库 |
 | 文件锁 | `golang.org/x/sys/unix` `Flock` | v0.49.0 | |
 | 重试 | 自实现 20 行指数退避 | — | 减少供应链面 |
-| 构建 | Makefile(GOOS/GOARCH 交叉编译),版本 `-ldflags` 注入;CI 跑 `staticcheck` + `gosec` + `govulncheck`(依赖已知漏洞)+ `gitleaks`(密钥泄露扫描) | — | 工具碰私钥,值得安全扫描;发布产物加 SBOM 与签名,见 §11.1 |
+| 构建 | Makefile(GOOS/GOARCH 交叉编译),版本 `-ldflags` 注入;CI 跑 `staticcheck` + `gosec` + `govulncheck`(依赖已知漏洞)+ `gitleaks`(密钥泄露扫描) | — | 工具碰私钥,值得安全扫描;发布产物附 SBOM,见 §11.1 |
 
 Go 版本:**1.27**(2026-08 发布的当前稳定线);`go.mod` 钉死直接依赖版本,上表"钉死版本"为 2026-10-30 经 Go module proxy 核实的最新正式版。
 
@@ -456,9 +456,10 @@ certsync/
 
 ### 11.1 二进制分发
 
-- CI 产出 `certsync-linux-amd64` / `certsync-linux-arm64` + `SHA256SUMS` + cosign 签名 + SBOM(syft)
+- CI 产出 `certsync-linux-amd64` / `certsync-linux-arm64` + `SHA256SUMS` + SBOM(syft)
 - 存放于同一 OSS Bucket 的 `dist/` 前缀(走拉取账号的只读权限之外单独授权,或直接复用手工分发)
-- 安装脚本:下载 → sha256 校验 → `cosign verify`(哈希文件本身也可能被篡改,签名才是终审)→ `install -m 755` 到 `/usr/local/bin/certsync` → `certsync version`
+- 安装脚本:下载 → sha256 校验 → `install -m 755` 到 `/usr/local/bin/certsync` → `certsync version`
+- 校验体系有意保持 SHA256 单层、不引入签名:**同源替换风险由写权限隔离兜底**——certs/ 与 dist/ 前缀的上传凭证相互独立(§6.2 上传账号仅可写 certs/),攻破任一凭证都换不掉另一前缀的内容
 - 升级:替换二进制即可(oneshot/timer 形态无常驻进程,下一轮 timer 自动用新版);多机版本差异通过 `certsync version` 巡检
 
 ### 11.2 systemd 单元
@@ -673,7 +674,7 @@ ALERT_MAIL_PASS=…
 
 - **多证书组**:config 增加 certs 数组,pull 按 domain 路由到组;当前单组够用
 - **KMS 信封加密**:主密钥托管阿里云 KMS,业务机用实例 RAM 角色换取数据密钥,消灭手工分发;接口已按"密钥加载器"隔离,替换实现不动主体
-- **自更新**:从 OSS dist/ 拉新版本自替换(校验 sha256 + 签名)
+- **自更新**:从 OSS dist/ 拉新版本自替换(校验 sha256)
 - **Prometheus metrics**:pull 成功/失败计数、证书剩余天数 gauge、blackbox TLS 探测(从外部探测 nginx 实际服务的证书,与磁盘文件状态解耦)
 - **Kubernetes**:上 K8s 后整体退役,换 cert-manager(§1.1)
 - **ZeroSSL/多 CA 自动降级**:主 CA 限额时自动切备用(依赖 ARI,暂无必要)
