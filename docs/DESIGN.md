@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| 版本 | v0.4(设计定稿,待评审;v0.2:依赖更新/toml/certbot 命名/路径清单;v0.3:验证体系强化/多通道告警;v0.4:补齐 OnFailure 兜底、webhook 鉴权头、state 备份机制、CI 平台(云效)、签名密钥管理) |
+| 版本 | v0.4(设计定稿,待评审;v0.2:依赖更新/toml/certbot 命名/路径清单;v0.3:验证体系强化/多通道告警;v0.4:补齐 OnFailure 兜底、webhook 鉴权头) |
 | 日期 | 2026-10-30 |
 | 状态 | 设计定稿,待评审;通过后进入 Phase 0(§15) |
 | 读者 | 运维 / 开发 |
@@ -266,8 +266,6 @@
 
 签发机本地不保留历史版本,历史由 OSS 版本控制兜底(§5.4);文件名与 OSS 明文体、业务机落地体三方同名,排查时一眼对上。
 
-**state 备份机制**:签发机部署 `certsync-backup.{service,timer}`(§11.2),每日将 `accounts/` 与 `certs/` tar 打包到 `/var/lib/certsync/state-backup/`,保留最近 14 份;该目录再由现有备份体系/异地同步带走。§13 的两条签发机恢复路径(有备份/无备份)都以它为前提——备份不做,重建就只剩重新注册账户一条路。
-
 **业务机(安装产物)**
 
 | 路径 | 权限 | 内容 | 说明 |
@@ -422,8 +420,6 @@ to = ["ops@example.com"]
 
 Go 版本:**1.27**(2026-08 发布的当前稳定线);`go.mod` 钉死直接依赖版本,上表"钉死版本"为 2026-10-30 经 Go module proxy 核实的最新正式版。
 
-CI:**阿里云云效(Codeup)流水线**(与仓库同源,私钥类凭证用其加密变量管理)——commit 级跑 lint(`staticcheck`/`gosec`/`govulncheck`/`gitleaks`)+ 单测 + pebble E2E(§15 CI 层),tag 触发交叉构建与发布产物(§11.1)。
-
 ---
 
 ## 10. 项目结构
@@ -459,7 +455,6 @@ certsync/
 - CI 产出 `certsync-linux-amd64` / `certsync-linux-arm64` + `SHA256SUMS` + cosign 签名 + SBOM(syft)
 - 存放于同一 OSS Bucket 的 `dist/` 前缀(走拉取账号的只读权限之外单独授权,或直接复用手工分发)
 - 安装脚本:下载 → sha256 校验 → `cosign verify`(哈希文件本身也可能被篡改,签名才是终审)→ `install -m 755` 到 `/usr/local/bin/certsync` → `certsync version`
-- 签名密钥管理:`cosign generate-key-pair` 生成;私钥存 CI 凭证管理(云效加密变量,永不入库),公钥 `deploy/cosign.pub` 随仓库分发并内置到安装脚本;轮换 = 生成新对、重签全平台产物、更新公钥
 - 升级:替换二进制即可(oneshot/timer 形态无常驻进程,下一轮 timer 自动用新版);多机版本差异通过 `certsync version` 巡检
 
 ### 11.2 systemd 单元
@@ -515,8 +510,6 @@ ExecStart=/usr/local/bin/certsync on-failure %i
 ```
 
 `certsync on-failure` 是刻意保持极短的代码路径:只读告警配置、发送 `unit_failed` 事件,不触碰 ACME/OSS/deploy 任何逻辑。二进制整体缺失时此钩子同样起不来,但 systemd 在 journal 留痕可巡检(§12.3),业务侧另有 `expiry_warning` 生命线(§12.1)——三层兜底互不依赖。
-
-签发机另部署 `certsync-backup.{service,timer}`(每日打包 state 到 `/var/lib/certsync/state-backup/`,保留最近 14 份,机制见 §6.5)。
 
 ### 11.3 单机安装清单
 
