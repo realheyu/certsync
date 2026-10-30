@@ -15,7 +15,7 @@ certsync renew ──lego/DNS-01──►  certsync/certs/<域名>/  ──pull�
 - CA 可插拔(Let's Encrypt / ZeroSSL EAB / 商业证书手工导入共用同一条管道)
 - 告警多通道:钉钉群机器人 / SMTP 邮件 / 通用 webhook
 
-完整设计(架构、安全模型、失败场景、验收清单)见 [docs/DESIGN.md](docs/DESIGN.md)。
+完整设计(架构、安全模型、失败场景、验收清单)见 [docs/DESIGN.md](docs/DESIGN.md);上线前要办的云资源/凭证/机器清单见 [deploy/PREPARE.md](deploy/PREPARE.md),办一件勾一件。
 
 ## 命令
 
