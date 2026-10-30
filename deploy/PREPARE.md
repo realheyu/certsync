@@ -4,9 +4,7 @@
 
 ## 一、阿里云控制台
 
-- [ ] 创建 OSS bucket(区域就近,如 cn-hangzhou),私有读写
-- [ ] bucket 开启**版本控制**(历史兜底的依赖,必须)
-- [ ] bucket 开启**访问日志**
+- [ ] 创建 OSS bucket(区域就近,如 cn-hangzhou),私有读写(bucket 不开版本控制/访问日志)
 - [ ] 记录 endpoint(`oss-cn-hangzhou.aliyuncs.com`)/ region(`cn-hangzhou`)/ bucket 名
 - [ ] RAM 上传账号(签发机用):自定义策略仅 `oss:PutObject` 于 `<bucket>/certsync/certs/*`(策略 JSON 见 §6.2),禁控制台登录,生成 AK/SK
 - [ ] RAM 拉取账号(业务机公用):仅 `oss:GetObject` 同前缀,禁控制台登录,生成 AK/SK

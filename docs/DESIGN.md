@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| 版本 | v0.4(设计定稿,待评审;v0.2:依赖更新/toml/certbot 命名/路径清单;v0.3:验证体系强化/多通道告警;v0.4:OnFailure 兜底、webhook 鉴权头、state 备份机制、CI 定为 GitHub Actions、分发校验定为 SHA256) |
+| 版本 | v0.4(设计定稿,待评审;v0.2:依赖更新/toml/certbot 命名/路径清单;v0.3:验证体系强化/多通道告警;v0.4:OnFailure 兜底、webhook 鉴权头、state 备份机制、CI 定为 GitHub Actions、分发校验定为 SHA256、bucket 免版本控制/访问日志) |
 | 日期 | 2026-10-30 |
 | 状态 | 设计定稿,待评审;通过后进入 Phase 0(§15) |
 | 读者 | 运维 / 开发 |
@@ -172,7 +172,6 @@
 ### 5.4 Bucket 配置要求
 
 - **私有读写**(default),禁止公共读
-- 开启**版本控制**(误覆盖/误删可恢复)与**访问日志**
 - 可选开启服务端加密 SSE-KMS(纵深防御,非依赖项——客户端加密才是主要防线)
 - 仅存放证书密文与二进制分发产物(§11),不做他用
 
@@ -221,7 +220,7 @@
 
 | 失陷点 | 暴露内容 | 影响 | 缓解 |
 |---|---|---|---|
-| OSS Bucket | 证书与私钥的 GCM 密文 | 无法解密 | 客户端加密 + 版本控制 + 日志 |
+| OSS Bucket | 证书与私钥的 GCM 密文 | 无法解密 | 客户端加密(密文本身无价值) |
 | 任一业务机 | 该机明文证书私钥 + 只读 RAM 凭证 + 主密钥 | 该证书需吊销重签;主密钥需轮换 | 最小权限;机器加固;§6.4 轮换流程 |
 | 签发机(最严重) | DNS 写密钥 + OSS 写凭证 + 明文证书 | 可篡改 DNS / 投毒分发 | 签发机单独加固:仅开放必要出网、无业务、密钥仅此一份;被入侵时的预案是吊销证书 + 换 DNS 密钥 + 全量轮换 |
 | 主密钥泄露 | OSS 密文可被解密 | 视同私钥泄露 | §6.4 轮换流程 |
@@ -264,7 +263,7 @@
     └── resource.json    0644  # lego Resource 存档(CertURL 等,吊销时用)
 ```
 
-签发机本地不保留历史版本,历史由 OSS 版本控制兜底(§5.4);文件名与 OSS 明文体、业务机落地体三方同名,排查时一眼对上。
+签发机本地只保留当前版本;历史兜底由 `certsync-backup` 的每日快照(保留 14 份,含 certs/)与 `push` 重建(§13)承担,不依赖 OSS 版本控制。文件名与 OSS 明文体、业务机落地体三方同名,排查时一眼对上。
 
 **state 备份机制**:签发机部署 `certsync-backup.{service,timer}`(§11.2),每日将 `accounts/` 与 `certs/` tar 打包到 `/var/lib/certsync/state-backup/`,保留最近 14 份;该目录再由现有备份体系/异地同步带走。§13 的两条签发机恢复路径(有备份/无备份)都以它为前提——备份不做,重建就只剩重新注册账户一条路。
 
@@ -596,7 +595,6 @@ ALERT_MAIL_PASS=…
 - `journalctl -u certsync-pull.service --since -24h`
 - **外部视角**(巡检的本质是验证 nginx 实际在服务的证书,而非只看磁盘文件):任意外部机器 `openssl s_client -connect <域名>:443 -servername <域名> </dev/null 2>/dev/null | openssl x509 -noout -fingerprint -sha256 -enddate`,与 meta.json 指纹比对
 - **CA 侧独立审计**:证书一旦签发必然进入 CT 日志,`crt.sh/?q=<域名>` 可查——"签发成功"不依赖 certsync 自己的报告
-- OSS 侧通过版本控制 + 日志审计对象变更
 
 ---
 
@@ -606,7 +604,7 @@ ALERT_MAIL_PASS=…
 |---|---|---|
 | CA/DNS API 故障,签发失败 | 旧证书继续服务;每日重试 + 每日 `issue_fail` 告警 | 30 天窗口内修复即可,无紧迫性 |
 | 签发后 OSS 上传失败 | 证书在本地 state;下轮 renew 重试(未到窗口会先尝试 push) | 手动 `certsync push` |
-| OSS 对象被误删 | pull 报 not found,告警;本地证书不受影响 | 签发机 `certsync push` 重建(或版本控制找回) |
+| OSS 对象被误删 | pull 报 not found,告警;本地证书不受影响 | 签发机 `certsync push` 重建 |
 | 上传中途断掉(meta 与对象不一致) | pull 指纹校验拒绝安装 | 无需处理,下轮上传覆盖自愈 |
 | 某业务机主密钥没换/输错 | 解密失败,保留旧证书,`install_fail` 告警 | 修该机密钥 |
 | nginx 配置本身有错 | `nginx -t` 拦截,回滚,`install_fail` 告警 | 修 nginx 配置,与证书无关 |
