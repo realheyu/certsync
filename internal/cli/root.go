@@ -1,4 +1,4 @@
-// Package cli cobra 命令接线:root/keygen/issue/renew/push/pull/status/on-failure(3 节)。
+// Package cli cobra 命令接线:root/keygen/issue/renew/push/pull/status/version/on-failure(3 节)。
 package cli
 
 import (
@@ -33,6 +33,7 @@ func NewRootCmd() *cobra.Command {
 		newPushCmd(),
 		newPullCmd(),
 		newStatusCmd(),
+		newVersionCmd(),
 		newOnFailureCmd(),
 	)
 	return root

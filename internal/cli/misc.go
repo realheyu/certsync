@@ -58,6 +58,16 @@ func newStatusCmd() *cobra.Command {
 	}
 }
 
+func newVersionCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "输出版本(编译时 -ldflags 注入,多机巡检对齐用,11.1 节)",
+		Run: func(cmd *cobra.Command, args []string) {
+			fmt.Fprintln(cmd.OutOrStdout(), Version)
+		},
+	}
+}
+
 func newOnFailureCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "on-failure <job>",
