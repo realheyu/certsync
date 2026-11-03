@@ -1,12 +1,6 @@
-# certsync 签发机 cron(设计 11.2 节)
-# 安装:复制为 /etc/cron.d/certsync(0644 root:root,cron 自动加载,无需重载守护进程)
-# 凭证直填 config.toml(整个文件 0600)最省事;若用 certsync.env,在命令前插 ". /etc/certsync/certsync.env && "
-# 注意:crontab 里 % 是换行语义,date 格式串必须写成 \%
-SHELL=/bin/sh
+# /etc/cron.d/certsync，root:root 0644。关闭 acme.sh 默认 cron 和旧 certsync renew 任务。
+# 一次续期检查后，push 遍历总目录，逐组上传独立 JSON 加密包。
+SHELL=/bin/bash
 PATH=/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-# 每日 03:23 续期检查(到窗口才签发);失败由 on-failure 兜底告警
-23 3 * * * root /usr/local/bin/certsync --config /etc/certsync/config.toml renew >>/var/log/certsync.log 2>&1 || /usr/local/bin/certsync --config /etc/certsync/config.toml on-failure renew >>/var/log/certsync.log 2>&1
-
-# 每日 04:33 state 备份(6.5 节):打包 accounts/ + certs/ 到 state-backup/,保留最近 14 份
-33 4 * * * root install -d -m 700 /var/lib/certsync/state-backup && tar -czf /var/lib/certsync/state-backup/$(date -u +\%Y\%m\%dT\%H\%M\%SZ).tar.gz -C /var/lib/certsync accounts certs && ls -1t /var/lib/certsync/state-backup/*.tar.gz | tail -n +15 | xargs -r rm -f >>/var/log/certsync.log 2>&1
+23 3 * * * root flock -n /run/certsync-issuer.lock timeout 1800 /usr/local/sbin/certsync-issuer-job >>/var/log/certsync.log 2>&1

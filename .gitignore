@@ -25,8 +25,26 @@ profile.cov
 go.work
 go.work.sum
 
-# env file
+# Runtime credentials; only empty, documented env examples belong in Git.
 .env
+.env.*
+*.env
+*.env.*
+!*.env.example
+
+# Certificate material, ACME state, and generated encrypted bundles
+*.pem
+*.key
+*.crt
+*.cer
+*.p12
+*.pfx
+*.enc
+.acme.sh/
+config.toml
+
+# Local logs
+*.log
 
 # Editor/IDE
 .idea/

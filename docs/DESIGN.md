@@ -1,700 +1,409 @@
-# certsync 设计文档
+# certsync 设计：acme.sh 签发 + Go 分发
 
-| | |
+| 项目 | 内容 |
 |---|---|
-| 版本 | v0.5(设计定稿,待评审;v0.2:依赖更新/toml/certbot 命名/路径清单;v0.3:验证体系强化/多通道告警;v0.4:失败兜底钩子、webhook 鉴权头、state 备份机制、CI 定为 GitHub Actions、分发校验定为 SHA256、bucket 免版本控制/访问日志;v0.5:调度弃 systemd timer 改用 Linux cron(11.2 节重写,含代价对照),敏感凭证支持直填 toml) |
-| 日期 | 2026-10-31 |
-| 状态 | 设计定稿,待评审;通过后进入 Phase 0(15 节) |
-| 读者 | 运维 / 开发 |
+| 版本 | v1.2 批量分发版，替代 v0.5 全流程 Go 方案 |
+| 日期 | 2026-11-03 |
+| 状态 | 简版已实现；本地测试、静态检查和双架构构建已通过，待实际环境验收 |
+| 范围 | Linux；一个签发机，多组证书，多个业务机 |
 
----
+## 1. 方案与职责
 
-## 1. 背景与动机
+acme.sh 负责申请和续期；certsync 是 Go 编写的单二进制工具，只负责证书包加密上传、下载校验和文件替换。所有运行配置从环境变量读取。
 
-现状:单机用 acme.sh 签发泛域名证书(`example.com + *.example.com`,阿里云 DNS-01 验证)。
-随着需要在多台服务器上使用同一张证书,每台机器各自签发的模式暴露出三个问题:
+```text
+签发机                         私有 OSS                    业务机
+acme.sh DNS-01 申请/续期
+  → 各组导出到域名子目录
+  → certsync push
+      逐组校验、合并、加密 ─→ 每组 bundle.enc ─────────────→ certsync pull
+                                                        下载、解密、校验
+                                                        替换两个文件
+                                                        ↓
+                                                  外层 nginx -t && reload
+```
 
-1. **限额**:Let's Encrypt 对"域名列表完全相同的证书"每 7 天最多签发 5 张、无豁免,所有账号合并计算(官方限额文档原文,附录A①),机器多于 5 台必然撞限。
-2. **密钥分发**:泛域名只能 DNS-01 验证,每台机器各自签就要持有阿里云 DNS 写权限密钥——任何一台失陷,整个域名的 DNS 都可被篡改。
-3. **无统一视图**:各自续期、各自失败,证书过期事故只能在单台上静默发生。
-
-此外,为兼容不信任 ISRG Root X1 的老设备(约 2024-09-30 DST Root X3 交叉签名过期后,老华为/老安卓等;根与链的时间线以 LE 官方证书链页为准,附录A③),未来可能整体切换 CA(ZeroSSL 或购买的商业 DV 证书)。分散签发会让换 CA 的成本乘以 N。
-
-**结论:集中签发 + OSS 加密中转 + 各服务器自动拉取部署**,整套系统用一个 Go 单二进制 `certsync` 实现,签发端内嵌 lego(ACME 库),彻底替代 acme.sh + 脚本。
-
-### 1.1 为什么不是别的方案(已否决项)
-
-| 备选方案 | 否决原因 |
+| 组件 | 功能 |
 |---|---|
-| 每台机器各自 acme.sh/lego | 重复证书限额 5 张/周;DNS 密钥到处放 |
-| Caddy 每台自动 HTTPS | 同上;且集中供给证书后 Caddy 相对 nginx 无剩余优势 |
-| certmagic(Go 库) | 面向长驻进程的后台续期模型,不适合定时任务形态 |
-| cert-manager | 只能运行在 Kubernetes 内,当前是普通服务器 |
-| 云厂商免费证书 | 每年张数有限、有效期短,泛域名不免费 |
-| Python 实现 | 分发需每台装运行时;Go 单二进制 scp 即部署 |
+| acme.sh | CA 交互、DNS-01、账户管理、签发续期、导出证书 |
+| certsync push | 遍历总目录，逐组校验、合并为 JSON、加密并上传独立 OSS 对象 |
+| certsync pull | 按组列表下载、完整解密、校验，分别安装到输出总目录下的组子目录 |
+| cron / 外层命令 | 定时执行、互斥、任务总超时、nginx 检查及 reload |
+| 钉钉群自定义机器人 | 可选：下载替换成功通知、签发端少于 15 天有效期告警 |
+| 现有运维体系 | 日志收集、其他故障告警、服务端证书到期监控、备份和人工恢复 |
 
----
+Go 工具不调用 acme.sh，不读取或使用 DNS 凭证，不管理账户、续期窗口或服务状态。编译后只需拷贝一个二进制；目标机器仍需系统 CA 根证书，签发机还需要 acme.sh 的运行依赖。不再安装 age、ossutil 或 Python 库。
 
-## 2. 目标与非目标
+## 2. 功能取舍
 
-### 目标
+保留每组证书和私钥整体加密、按组独立上传下载、基本证书校验、完整内容比较、临时文件替换、日志、非零失败退出码和请求超时。
 
-- G1 一台签发机自动维护一张泛域名证书,到期前自动续期(默认提前 30 天)
-- G2 私钥端到端加密(AES-256-GCM)后才落 OSS,任何 OSS 侧泄露不直接泄露私钥
-- G3 业务服务器自动拉取、校验、原子安装到 nginx 并热加载,失败自动回滚
-- G4 全链路无人值守:关键事件(成功/失败/临期)推送 webhook 告警
-- G5 CA 可插拔:切换 Let's Encrypt / ZeroSSL(EAB)/ 其他 ACME CA 只改签发端配置,分发链路零改动
-- G6 单静态二进制,支持 linux/amd64 与 linux/arm64,统一版本管理
-- G7 幂等与自愈:重复执行无副作用;单点故障(签发机宕机、OSS 对象误删)有明确恢复路径
+| 删除内容 | 简化后的处理 |
+|---|---|
+| 内嵌 lego、issue/renew、ACME state | 交给 acme.sh |
+| keygen、密钥文件、覆盖优先级、轮换与密钥版本 | 用户设置固定环境变量字符串 |
+| meta.json、组内多个对象提交顺序、指纹版本协议 | 每组一个加密包，一次上传 |
+| 远程状态检查、自动自愈状态 | 每日重新上传本地有效产物 |
+| nginx 命令配置、服务探测 | 外层命令检查和 reload |
+| 自动备份、回滚、历史清理 | 现有备份体系和人工恢复 |
+| 通用多渠道告警、邮件、on-failure | 仅保留两类钉钉通知，其余依赖日志、退出码和现有监控 |
+| 多目标配置文件、灰度参数、status、自更新 | 上传从目录发现分组，下载用环境变量列举组名 |
 
-### 非目标
+签发机一份环境配置处理整个总目录；业务机一份配置选择多个组，一次拉取分别安装到各自子目录，整批成功后统一 reload。各组独立发布，不保证整批同时更新，不自动删除远程已存在对象。只实现当前分发用途，不增加 Web UI、KMS、自动切 CA 或二进制分发平台。
 
-- 不做 Web UI、不做多租户
-- v1 只管理**一张证书组**(一组域名);多证书组留作扩展(16 节)
-- 不管理证书之外的任何配置(nginx 配置仍由现有体系管理)
-- 不做 KMS 集成(v1 用预置对称密钥,KMS 见 16 节扩展)
+## 3. 命令接口
 
----
-
-## 3. 总体架构
-
-```
-                      ┌────────────────────────── 签发机(1 台)──────────────────────────┐
-                      │                                                                │
-  cron 每日           │  certsync renew                                                │
-  ─────────────────►  │   ├─ 读本地证书,剩余 > renew_before_days? → 跳过退出           │
-                      │   ├─ lego / ACME CA(LE 或 ZeroSSL,DNS-01)                    │
-                      │   │    └─ 阿里云 DNS API 写 TXT 记录(仅此机器持有该密钥)      │
-                      │   ├─ 新证书写入本地 state(/var/lib/certsync/certs/…)          │
-                      │   └─ AES-256-GCM 加密 → 上传 OSS(上传账号,只写)              │
-                      └──────────────────────────────┬─────────────────────────────────┘
-                                                     │ HTTPS
-                                                     ▼
-                                      ┌──────────────────────────┐
-                                      │ 阿里云 OSS(私有 Bucket)  │
-                                      │ certsync/certs/<domain>/  │
-                                      │   ├─ fullchain.pem.enc    │
-                                      │   ├─ privkey.pem.enc      │
-                                      │   └─ meta.json(明文)     │
-                                      └──────────────────────────┘
-                                                     │ HTTPS
-      ┌──────────────────────────────────────────────┼──────────────────────────────────────────────┐
-      ▼                                              ▼                                              ▼
-┌───── 业务机 A(nginx)─────┐              ┌───── 业务机 B(nginx)─────┐                    ┌──── 业务机 N ────┐
-│ cron 每 6 小时            │              │                          │                    │                  │
-│ certsync pull            │              │ certsync pull(同左)      │                    │ certsync pull    │
-│  ├─ 读 meta.json         │              └──────────────────────────┘                    └──────────────────┘
-│  ├─ 指纹相同? → 跳过     │
-│  ├─ 下载+解密(拉取账号,只读)                                          │
-│  ├─ 校验:有效期/SAN 覆盖/证书私钥配对/指纹与 meta 一致                │
-│  ├─ 原子替换文件(私钥 0600)+ 备份旧文件                             │
-│  └─ nginx -t → systemctl reload nginx;任一步失败 → 回滚备份 + 告警   │
-└─────────────────────────────┘
+```text
+certsync push       遍历总目录，逐组读取证书和私钥，加密并上传
+certsync pull       按组列表批量下载、解密、校验并安装到各自子目录
+certsync version    输出构建版本
 ```
 
-三类角色,同一二进制、不同子命令:
+不设配置文件参数或密钥覆盖参数。成功退出 0；配置、网络、解密、校验和文件操作失败均退出非零。pull 内容未变也退出 0，外层命令可继续检查和 reload。
 
-| 角色 | 机器 | 命令 | 触发 |
-|---|---|---|---|
-| 签发 | 1 台 | `certsync renew` | cron,每日 |
-| 拉取部署 | N 台 | `certsync pull` | cron,每 6 小时 + `@reboot` |
-| 运维(手动) | 任意 | `keygen` / `issue` / `push` / `status` / `version` | 手动 |
+不把叶子证书指纹当作完整部署状态：即使证书相同，私钥缺失或不同，也必须重新安装正确文件。
 
-### 命令一览
+## 4. 环境变量
 
-| 命令 | 作用 | 典型场景 |
+工具只读环境，不读 TOML、独立密钥文件或登录 shell 初始化文件。
+
+| 变量 | 使用方 | 说明 |
 |---|---|---|
-| `certsync keygen --out <file>` | 生成 32 字节主密钥(base64 写入 0600 文件) | 初始化、密钥轮换 |
-| `certsync issue` | 强制向 CA 申请新证书并落盘、加密上传 | 首次部署、测试(`--staging`) |
-| `certsync renew` | 检查剩余有效期,到窗口才触发 issue;否则直接退出 | 每日 cron |
-| `certsync push` | 不联系 CA,把本地 state 里的证书重新加密上传 | OSS 对象误删修复、换密钥后重加密 |
-| `certsync pull [--domain x]` | 拉取、校验、安装、reload | 各业务机 cron |
-| `certsync status` | 打印各 target 本地证书的域名、到期时间、剩余天数 | 人工巡检 |
-| `certsync version` | 输出版本(编译时注入) | 排查多机版本 |
+| CERTSYNC_KEY | push / pull，必填 | 32 字节随机密钥的标准 Base64 编码，通常为 44 个字符 |
+| CERTSYNC_GROUPS | 仅 pull，必填 | 要下载的组名列表，例如 `*.example.com,other.com`；每项与上传子目录名完全一致，支持小写普通域名和以 `*.` 开头的通配域名；按字面值选择组，不是 SAN 列表或组名匹配模式，不允许空项、重复项或路径，逗号周围可有空格 |
+| OSS_ACCESS_KEY_ID | push / pull，必填 | 各角色自己的 OSS AccessKey ID |
+| OSS_ACCESS_KEY_SECRET | push / pull，必填 | OSS AccessKey Secret |
+| OSS_REGION | push / pull，必填 | Bucket 地域，例如 cn-hangzhou |
+| OSS_ENDPOINT | push / pull，可选 | 未设时由 SDK 根据地域解析；显式设置时只允许 HTTPS |
+| OSS_BUCKET | push / pull，必填 | Bucket 名称 |
+| OSS_PREFIX | push / pull，必填 | 两端相同的对象前缀，例如 certsync；生成 <前缀>/<组目录名>/bundle.enc，禁止绝对路径、URL、空路径段及 . / .. 路径段，末尾 / 自动去除 |
+| CERTSYNC_SOURCE_DIR | push，必填 | 证书总目录，每个直接域名子目录包含 fullchain.pem 和 privkey.pem |
+| CERTSYNC_OUTPUT_DIR | pull，必填 | 输出总目录；各组安装到 <总目录>/<组名>/fullchain.pem 和 privkey.pem |
+| DINGTALK_WEBHOOK | push / pull，可选 | 群自定义机器人完整 HTTPS 地址；留空不发送群消息 |
+| DINGTALK_SECRET | push / pull，可选 | 加签密钥 `SEC...`；设置时须同时设置 DINGTALK_WEBHOOK，关键词/IP 验证可留空 |
+| ACME_HOME | 仅签发机 | acme.sh 安装和状态目录，例如 /opt/acme.sh |
+| ACME_EMAIL | 仅首次注册 | 接收 CA 账户通知的邮箱 |
+| ACME_SERVER | 仅签发机 | 显式选择 CA，例如 letsencrypt；由 acme.sh 保存到签发配置 |
+| ACME_DOMAINS | 手动首签时指定 | 本次申请的一组域名，例如 example.com,*.example.com；Go 不读取 |
+| Ali_Key / Ali_Secret | 仅签发机上的 acme.sh | 阿里云 DNS 凭证，与 OSS 账号分开 |
 
-**`--staging` 隔离规则**:使用独立 ACME 账户与独立 state 子目录(`state/staging/`),OSS 上传目标强制替换为 `<prefix>-staging/`——staging 证书由非受信 CA 签发,绝不允许进入正式分发链路,否则全网客户端立刻报"证书不可信"。
+缺失或格式不合法时立即报错，不猜测凭证、不回退到其他密钥来源。机器时间应保持同步。
 
----
+### 4.1 签发机
 
-## 4. 证书生命周期
+文件 /etc/certsync/issuer.env，root 拥有，权限 0600，父目录权限 0700：
 
+```sh
+CERTSYNC_KEY='填写生成的完整Base64密钥'
+CERTSYNC_SOURCE_DIR='/var/lib/certsync/certs'
+ACME_HOME='/opt/acme.sh'
+ACME_EMAIL='ops@example.com'
+ACME_SERVER='letsencrypt'
+OSS_ACCESS_KEY_ID='填写上传账号AK'
+OSS_ACCESS_KEY_SECRET='填写上传账号SK'
+OSS_REGION='cn-hangzhou'
+OSS_ENDPOINT='https://oss-cn-hangzhou.aliyuncs.com'
+OSS_BUCKET='my-cert-bucket'
+OSS_PREFIX='certsync'
+Ali_Key='填写DNS账号AK'
+Ali_Secret='填写DNS账号SK'
+DINGTALK_WEBHOOK=''
+DINGTALK_SECRET=''
 ```
-申请 ──► 本地 state ──► 加密上传 OSS ──► 业务机安装 ──► 有效期流逝
-              │              │                  │
-              │   到期前 30 天:renew 重新触发    │
-              │   (issue → push,对象原地覆盖)   │
-              └────────── CA 吊销/换 CA:同 issue 流程,内容变化 → 指纹变化 → 全网自动更新
+
+### 4.2 业务机
+
+文件 /etc/certsync/pull.env，权限同上。业务机没有 DNS 凭证：
+
+```sh
+CERTSYNC_KEY='与签发机相同的完整Base64密钥'
+CERTSYNC_GROUPS='*.example.com,other.com'
+CERTSYNC_OUTPUT_DIR='/etc/nginx/certs'
+OSS_ACCESS_KEY_ID='填写下载账号AK'
+OSS_ACCESS_KEY_SECRET='填写下载账号SK'
+OSS_REGION='cn-hangzhou'
+OSS_ENDPOINT='https://oss-cn-hangzhou.aliyuncs.com'
+OSS_BUCKET='my-cert-bucket'
+OSS_PREFIX='certsync'
+DINGTALK_WEBHOOK=''
+DINGTALK_SECRET=''
 ```
 
-关键性质:
+env 是受信任的 root 管理的 shell 赋值文件，真实值不提交 Git。用 `set -a; . 文件; set +a` 加载，使普通赋值也被导出；只 source 不足以让子进程读取未导出的变量。容器也可直接注入相同环境变量。
 
-- **OSS 对象键固定、内容原地覆盖**,`meta.json` 中的证书指纹(证书 DER 的 SHA-256)是全网唯一比对依据
-- **指纹 = 版本**:业务机本地已装证书的指纹与 meta 一致即跳过,实现幂等
-- 吊销、换 CA、换密钥对业务机全部透明——指纹变了就更新,没变就什么都不做
+### 4.3 组名规则
 
----
+组名是小写 ASCII/Punycode 普通域名，或在同样的域名前加一个完整的 `*.` 标签，例如 `example.com`、`*.example.com`、`*.sub.example.com`。去掉可选的 `*.` 后仍须包含至少两个非空标签；每个普通标签不超过 63 字符，只含小写字母、数字和非首尾连字符，整个组名（含 `*.`）不超过 253 字符。拒绝路径、空项、重复项、裸 `*`、`api.*.example.com`、`foo*.example.com` 和 `**.example.com`。
 
-## 5. OSS 存储设计
+组名在目录、OSS 对象键和下载配置中保持原样；`*` 是字面字符，不进行 Shell glob 或组名匹配。`example.com` 与 `*.example.com` 是两个独立组，可以同时存在，下载其中一组不会选择另一组。包含星号的 Shell 参数和路径须加引号。组名不枚举证书所有 SAN，也不隐含根域名覆盖，证书校验规则见第 8 节。
 
-### 5.1 对象布局
+不打印环境、不启用包含敏感值的 shell 调试输出、不将密钥放命令行参数。acme.sh 可能把 DNS 凭证保存到自己的账户配置，这是它的内部行为；其目录也须作为敏感数据保护，certsync 不管理它。
 
+## 5. 加密与 OSS 对象
+
+### 5.1 固定密钥
+
+用户生成一次随机值，并在两端配置同一个 CERTSYNC_KEY：
+
+```sh
+openssl rand -base64 32
 ```
-<prefix>/certs/<primary_domain>/
-├── fullchain.pem.enc   # AES-256-GCM 加密的 fullchain(叶子+中间证书,PEM)
-├── privkey.pem.enc     # AES-256-GCM 加密的私钥 PEM
-└── meta.json           # 明文,含指纹等元数据(不含敏感信息)
-```
 
-`<primary_domain>` = 证书组第一个域名(即 CN),如 `example.com`;业务机 pull 配置里的 `domain` 必须与之一致。
+解码后必须恰为 32 字节。普通自选密码不作为输入，不实现密码派生、密钥文件、自动轮换或过渡期兼容。用户修改密钥后，自行同步所有机器并重新 push。
 
-### 5.2 meta.json 结构
+### 5.2 包格式
+
+明文是一个小 JSON 对象，不使用 tar/zip：
 
 ```json
 {
-  "domain": "example.com",
-  "fingerprint": "3f9c…(sha256 of cert DER, hex)",
-  "not_before": "2026-10-29T00:00:00Z",
-  "not_after": "2027-01-27T00:00:00Z",
-  "sans": ["example.com", "*.example.com"],
-  "issuer": "E6",
-  "updated_at": 1790000000
+  "fullchain_pem": "-----BEGIN CERTIFICATE-----\n...",
+  "private_key_pem": "-----BEGIN PRIVATE KEY-----\n..."
 }
 ```
 
-### 5.3 写入顺序(一致性约定)
+密文格式：
 
-上传顺序固定为 **fullchain.pem.enc → privkey.pem.enc → meta.json**,meta.json 最后写,作为"提交点":
-
-- pull 端以 meta.fingerprint 为准,下载后校验证书指纹与之一致才安装
-- 任何"上传到一半"的中间态(新 meta 未写 / 新对象写一半)都会被指纹校验拒绝,业务机继续用本地旧证书,下一轮重试
-- OSS 无事务,此约定保证最终一致且永不装入损坏数据
-
-### 5.4 Bucket 配置要求
-
-- **私有读写**(default),禁止公共读
-- 可选开启服务端加密 SSE-KMS(纵深防御,非依赖项——客户端加密才是主要防线)
-- 仅存放证书密文与二进制分发产物(11 节),不做他用
-
----
-
-## 6. 安全设计
-
-### 6.1 加密方案
-
-- 算法:**AES-256-GCM**,每次加密随机 12 字节 nonce 前置于密文(同一密钥永不重用 nonce,GCM 认证标签保证篡改可检测)
-- 主密钥:32 字节,base64 存储,`certsync keygen` 生成
-- 分发:**带外渠道**(手工 scp / 现有密钥管理流程)放到每台机器 `/etc/certsync/certsync.key`(0600, root:root);亦可用环境变量 `CERTSYNC_KEY` 注入(优先级高于文件)
-- 授权范围:主密钥只在签发机与业务机的内存中出现;OSS、日志、告警中永远只有密文
-
-### 6.2 RAM 账号最小权限
-
-上传端(签发机专用子账号,仅 `PutObject`):
-
-```json
-{
-  "Version": "1",
-  "Statement": [{
-    "Effect": "Allow",
-    "Action": ["oss:PutObject"],
-    "Resource": ["acs:oss:*:*:<bucket>/certsync/certs/*"]
-  }]
-}
+```text
+格式头 CERTSYNC1（9 字节） | 随机 nonce（12 字节） | AES-256-GCM 密文和认证标签
 ```
 
-拉取端(业务机公用子账号,仅 `GetObject`):
+使用 Go 标准库 crypto/rand、crypto/aes、crypto/cipher。格式头作为 GCM 附加认证数据，每次加密使用新 nonce；格式头是固定解析标记，不是证书或密钥版本。证书包上限 1 MiB，下载超限即拒绝，不能无限读取远程对象。
 
-```json
-{
-  "Version": "1",
-  "Statement": [{
-    "Effect": "Allow",
-    "Action": ["oss:GetObject"],
-    "Resource": ["acs:oss:*:*:<bucket>/certsync/certs/*"]
-  }]
-}
+客户端完整下载并认证解密后，才解析和使用明文。错误密钥、截断和篡改均失败。本方案不实现签发者身份签名、有效期内旧包防重放或吊销检查；OSS 写权限仍属于发布权限。
+
+### 5.3 每组独立发布
+
+```text
+oss://my-cert-bucket/certsync/*.example.com/bundle.enc
+oss://my-cert-bucket/certsync/other.com/bundle.enc
 ```
 
-两个账号均禁止控制台登录、独立 AccessKey、泄露可单独撤销互不影响。
+push 对每组分别校验和加密后，对 <OSS_PREFIX>/<目录名>/bundle.enc 执行一次 PutObject，不先删除旧对象。不上传明文、账户信息、meta.json 或其他旁文件，不维护多个对象的提交状态。
 
-### 6.3 威胁模型
+客户端上传报错时不推断服务端是否已提交，直接报告失败。重传当前有效证书包即可，无需重新申请证书。
 
-| 失陷点 | 暴露内容 | 影响 | 缓解 |
-|---|---|---|---|
-| OSS Bucket | 证书与私钥的 GCM 密文 | 无法解密 | 客户端加密(密文本身无价值) |
-| 任一业务机 | 该机明文证书私钥 + 只读 RAM 凭证 + 主密钥 | 该证书需吊销重签;主密钥需轮换 | 最小权限;机器加固;6.4 节轮换流程 |
-| 签发机(最严重) | DNS 写密钥 + OSS 写凭证 + 明文证书 | 可篡改 DNS / 投毒分发 | 签发机单独加固:仅开放必要出网、无业务、密钥仅此一份;被入侵时的预案是吊销证书 + 换 DNS 密钥 + 全量轮换 |
-| 主密钥泄露 | OSS 密文可被解密 | 视同私钥泄露 | 6.4 节轮换流程 |
+沿用 OSS Go SDK，凭证显式取自环境变量。上传账号仅授权上传前缀下各组对象的 oss:PutObject，下载账号仅授权所需组对象的 oss:GetObject；不使用列表、HEAD、自愈和删除接口。使用私有 Bucket、不同角色账号和 HTTPS。真实 SDK 所需权限须在验收时验证。
 
-### 6.4 主密钥轮换流程
+通配组对象键保留字面值 `*`，例如 `certsync/*.example.com/bundle.enc`。OSS RAM 授权策略里的 `*` 仍表示匹配符，不能把含星号的对象键直接拼入策略后视为精确对象授权，须单独核对授权范围。
 
-1. `certsync keygen` 生成新密钥,带外分发到**所有**机器,暂存为 `certsync.key.new`
-2. 签发机执行 `certsync push --key-file /etc/certsync/certsync.key.new`:用新密钥重加密并覆盖 OSS 对象
-3. 各机器将 `certsync.key.new` 改名替换 `certsync.key`(可一台台做)
-4. 过渡期内旧密钥机器 pull 解密失败 → **保留本地旧证书 + 告警,不安装任何东西**,换完密钥后下一轮自动恢复正常
-5. 确认全网 `certsync pull` 成功后,从源头销毁旧密钥副本
+## 6. 批量 push 流程
 
-证书本身未变,指纹不变,轮换不触发任何 reload。
+上传目录布局：
 
-### 6.5 路径清单与文件权限
-
-程序涉及的**全部**路径按机器角色梳理如下(文件命名统一参考 certbot:`fullchain.pem` = 叶子+中间证书、`privkey.pem` = 私钥,语义即文件名;标 ★ = 含敏感数据):
-
-**通用(签发机/业务机一致)**
-
-| 路径 | 权限 | 内容 | 谁写 | 说明 |
-|---|---|---|---|---|
-| `/usr/local/bin/certsync` | 0755 root | 二进制 | 部署/升级(11.1 节) | oneshot 形态,替换即升级 |
-| `/etc/certsync/config.toml` | 0644 root | 配置 | 人工 | 不含密钥值,可入配置仓库 |
-| `/etc/certsync/certsync.env` ★ | 0600 root | AK/SK、钉钉加签密钥、邮箱密码等敏感环境变量 | 人工 | cron 行 source 注入(11.2 节);凭证也可直填 config.toml(8 节,整个文件降 0600) |
-| `/etc/certsync/certsync.key` ★ | 0600 root | AES 主密钥(base64) | 带外分发 | 轮换见 6.4 节;env `CERTSYNC_KEY` 优先 |
-| `/run/certsync.lock` | — | flock 锁 | 每次运行 | 仅锁不含数据;tmpfs,重启自清 |
-| `/var/log/certsync.log` | 0644 root | 日志(slog 文本 + 命令输出) | cron 重定向 | 不经 journald,轮转见 11.2 节 |
-
-**签发机 state(`/var/lib/certsync/`,整体 0700,定期打包备份——恢复能力见 13 节)**
-
-```
-/var/lib/certsync/
-├── accounts/<email>/
-│   ├── account.key    ★0600  # ACME 账户私钥,首次注册生成;丢失=重新注册,不影响已签发证书
-│   └── account.json     0600  # 注册信息(registration URI 等)
-└── certs/<primary_domain>/
-    ├── fullchain.pem    0644  # 叶子+中间证书,issue 时覆盖写
-    ├── privkey.pem    ★ 0600  # 证书私钥,issue 时覆盖写
-    └── resource.json    0644  # lego Resource 存档(CertURL 等,吊销时用)
+```text
+/var/lib/certsync/certs/
+├── *.example.com/
+│   ├── fullchain.pem
+│   └── privkey.pem
+└── other.com/
+    ├── fullchain.pem
+    └── privkey.pem
 ```
 
-签发机本地只保留当前版本;历史兜底由签发机备份 cron 行的每日快照(保留 14 份,含 certs/,11.2 节)与 `push` 重建(13 节)承担,不依赖 OSS 版本控制。文件名与 OSS 明文体、业务机落地体三方同名,排查时一眼对上。
+1. 检查公共配置、总目录和 OSS_PREFIX，解析密钥；上传组名由目录获取，不读取 CERTSYNC_GROUPS。
+2. 只枚举总目录直接子项，按名字排序。普通文件忽略，软链接按失败处理，不递归查找。
+3. 每个子目录名必须符合第 4.3 节的普通或通配域名规则，作为组标识与该组期望域名；保持字面值，不转换或展开星号。
+4. 读取 fullchain 后先检查叶子证书 NotAfter，剩余有效期严格少于 15 × 24 小时则记录临期事件；已过期也记录。再完整读取私钥并校验证书覆盖目录域名、可信链、有效期和私钥配对，不接受软链接文件。元数据检查不能代替证书校验，过期证书仍拒绝上传。
+5. 把两个 PEM 内容编码为一个 JSON，整体加密后上传到 <OSS_PREFIX>/<目录名>/bundle.enc；不改变包格式。
+6. 一组失败记录原因后继续其余组。每组记录结果，最后汇总成功／失败数量；有失败则整体非零退出。总目录为空、没有组目录或仍采用旧的平铺布局时也报错。上下文取消则停止剩余处理。
 
-**state 备份机制**:签发机部署 `certsync-backup.{service,timer}`(11.2 节),每日将 `accounts/` 与 `certs/` tar 打包到 `/var/lib/certsync/state-backup/`,保留最近 14 份;该目录再由现有备份体系/异地同步带走。13 节的两条签发机恢复路径(有备份/无备份)都以它为前提——备份不做,重建就只剩重新注册账户一条路。
+每次 push 都上传全部有效组，不先查询远程指纹。失败组的本地文件不删除；本地删除组不触发 OSS 删除。可以直接重跑整个批次，不必重新申请证书或维护上传完成标记。各组分别提交，不建立整批事务。
 
-**业务机(安装产物)**
+acme.sh 导出失败可能留下不配对文件，由校验阻止该组发布，其他有效组仍能上传。总目录独立于 acme.sh 内部工作目录和业务 nginx 正在使用的路径。
 
-| 路径 | 权限 | 内容 | 说明 |
-|---|---|---|---|
-| `<pull.targets[].cert_file>`,默认 `/etc/nginx/certs/<domain>/fullchain.pem` | 0644 root | 安装的证书 | 原子替换(7.2 节);路径可配置,共存期也可直接指向 acme.sh 原路径 |
-| `<pull.targets[].key_file>`,默认 `/etc/nginx/certs/<domain>/privkey.pem` | 0600 root | 安装的私钥 | 同上 |
-| `/var/lib/certsync/backup/<domain>/<时间戳>/{fullchain.pem,privkey.pem}` | 0644/0600 | 旧证书备份 | 保留最近 10 份(7.2 节) |
+## 7. 批量 pull 流程和替换边界
 
-业务机**无其他状态文件**:pull 跳过判断所需的"已装指纹"从本地已装证书现算,不单独存档。
+例如 `CERTSYNC_GROUPS='*.example.com,other.com'`、`OSS_PREFIX='certsync'`、`CERTSYNC_OUTPUT_DIR='/etc/nginx/certs'`：
 
-**OSS 对象**(完整布局与写入顺序见 5 节):`<prefix>/certs/<domain>/{fullchain.pem.enc, privkey.pem.enc, meta.json}`——前两者为 GCM 密文,meta.json 明文。
-
-**内存与环境变量中的敏感数据**(盘上上述位置之外再无副本):`ALICLOUD_ACCESS_KEY/SECRET`、`OSS_ACCESS_KEY_ID/SECRET`、`CERTSYNC_KEY`、`DINGTALK_SECRET`、`ALERT_MAIL_USER/PASS`(env 注入);主密钥与解密后的证书私钥仅在进程内存中短暂存在,永不写日志(6.1 节)。
-
----
-
-## 7. 可靠性设计
-
-### 7.1 安装前的校验链(全部通过才落盘)
-
-1. GCM 解密成功(认证标签验证,密文被篡改/密钥不对直接失败)
-2. 证书 PEM 可解析(x509);fullchain 结构合法:首块为叶子证书,且至少含一张中间证书(兜住 Bundle 未开启/链不完整的错误签发)
-3. 当前时间在 `not_before ~ not_after` 内(要求各机 NTP 正常)
-4. 证书 SAN 覆盖目标域名(精确或 `*.example.com` 通配匹配;通配只匹配一层子域)
-5. **证书与私钥配对**(双方公钥 `Equal` 比较)
-6. 证书指纹 == meta.fingerprint(防半更新状态)
-
-任何一步失败:拒绝安装、保留现状、告警退出。
-
-### 7.2 原子安装与回滚
-
-```
-写临时文件(与目标同目录,保证 rename 原子性)
-  → 备份旧文件到 backup_dir/<domain>/<时间戳>/{fullchain.pem,privkey.pem}(保留最近 10 份)
-  → rename 落位(证书 0644 / 私钥 0600)
-  → 执行 check_cmd(nginx -t)
-  → 执行 reload_cmd(systemctl reload nginx)
-  → 探测确认(默认开):本机 127.0.0.1:443 以 SNI 握手,实际服务证书指纹 == meta 指纹
-  → 任一步失败:从备份恢复原文件(或删除新增文件)→ 告警;例外——仅探测不一致时**不回滚文件**(文件已通过全部内容校验,不一致几乎必是 nginx 配置引用了别的路径或 reload 未生效,回滚无意义),只告警
+```text
+certsync/*.example.com/bundle.enc → /etc/nginx/certs/*.example.com/{fullchain.pem,privkey.pem}
+certsync/other.com/bundle.enc     → /etc/nginx/certs/other.com/{fullchain.pem,privkey.pem}
 ```
 
-说明:reload 失败时 nginx 内存里仍是旧证书,磁盘回滚即对齐;"配置错误 → 服务器下线"被 `nginx -t` 前置拦截。
+1. 检查公共配置、组列表和输出总目录。组名支持普通和以 `*.` 开头的通配域名，英文逗号分隔，可有周围空格；按字面值选择组，禁止空项、重复项、非法星号和路径；旧单组变量 OSS_OBJECT_KEY / CERTSYNC_DOMAINS 存在时直接给出迁移错误。
+2. 按配置顺序，下载 <OSS_PREFIX>/<组名>/bundle.enc，限制单包大小；不列举远程对象，不下载未选择组。
+3. 完整认证解密并解析 JSON，校验链、有效期、私钥配对及证书覆盖组名。
+4. 比较 <输出总目录>/<组名>/ 中两个文件的完整内容；均相同时不重写，缺失私钥时安装完整配对文件。
+5. 在该组目录中准备两个临时文件，证书 0644、私钥 0600；Write、Sync、Close 成功后分别 rename 替换。内容相同仍检查私钥权限。
+6. 一组失败记录具体原因，继续其余组；最后汇总成功／失败数，有任一失败返回非零。整批成功包括文件未变时才返回 0，由外层统一检查和 reload。
 
-### 7.3 并发与幂等
+输出总目录和组子目录必须是普通目录，不支持软链接；目标文件也不支持软链接。未选择的本地目录和文件不会删除。
 
-- 每台机器 `flock /run/certsync.lock`(LOCK_EX | LOCK_NB),抢不到锁直接退出——cron 重叠/手工与 cron 并发都安全
-- 指纹相同即跳过所有写操作——重复执行零副作用
-- 签发端 renew 到窗口外直接退出,不产生 ACME 订单——避免无谓消耗限额
+每组下载、解密、校验和准备临时文件阶段失败，保留该组旧文件。整批不是事务，成功组不会因其他组失败而回滚。单组的两次 rename 也不是一个事务：替换中途退出可能留下混合版本，此时外层不 reload；重跑 pull 会比较并修复各组文件。
 
-### 7.4 重试与超时
+不要让其他任务同时重写输出树或在替换中途重启服务。不实现自动回滚、掉电事务或整批原子切换。
 
-- OSS 请求:指数退避重试(1s/2s/4s,3 次),单请求 30s 超时
-- ACME:依赖 lego 内部重试;renew 本身每日跑,持续失败会每日告警
-- 告警 webhook:10s 超时,失败仅记日志不阻塞主流程
+## 8. 共用校验
 
-### 7.5 时钟依赖
+push / pull 使用同一套 Go 校验逻辑：
 
-证书有效期校验依赖本机时钟,所有机器必须运行 NTP(chrony/systemd-timesyncd),部署清单包含此项检查。
+- 证书 PEM 和私钥可解析，首张为叶子证书，fullchain 提供所需中间证书。
+- 使用 tls.X509KeyPair 检查公私钥配对，支持实际使用的 EC / RSA 格式。
+- 使用 x509.Verify、系统可信根和 fullchain 的中间证书，验证服务器用途、证书链及有效期；不能只数 PEM 块数。
+- 上传校验证书覆盖组目录名，下载校验证书覆盖对应组名。普通域名使用 VerifyHostname；以 `*.` 开头的通配组要求证书 DNS SAN 中存在相同的通配域名（不区分 SAN 大小写），不通过构造某个子域名来推测覆盖范围。
+- `*.example.com` 组接受同时包含根域名的证书，也接受只包含对应通配符 SAN 的证书；仅包含 `example.com`、`api.example.com` 或 `*.sub.example.com` 的证书不满足该组。普通 `example.com` 组仍要求覆盖根域名，仅有 `*.example.com` SAN 不满足要求。
+- 拒绝空包、缺字段、超限包、未知格式及无效域名配置。
 
----
+正式分发不设跳过可信链验证的环境开关。测试根只在自动测试中注入；真实 staging 证书用于验证 acme.sh 签发，不上传正式对象、不安装到正式服务。
 
-## 8. 配置设计
+### 8.1 钉钉通知
 
-`/etc/certsync/config.toml`(同一份模板,按机器裁剪;签发机用 acme/alidns/oss 段,业务机用 oss/crypto/pull 段):
+通知通过可选的 DINGTALK_WEBHOOK、DINGTALK_SECRET 配置，签发机和业务机可以配置不同机器人。不配置 Webhook 时保持原分发行为，签发端的有效期警告仍写入本地日志。消息包含固定关键词 `certsync`、机器名、组名、事件、叶子证书到期时间和剩余时长；时间显示 UTC+8，不包含私钥或任何访问凭证。
 
-```toml
-# ─── 签发机 ───────────────────────────────────────────────
-[acme]
-ca_server = ""             # 空 = Let's Encrypt 正式;--staging 覆盖为测试环境
-email = "ops@example.com"
-domains = ["example.com", "*.example.com"]  # 第一个域名为存储主键
-renew_before_days = 30     # 剩余天数低于此值触发续期
+- pull 仅在 Install 返回 changed=true 且无错误时收集替换成功事件，包括首次安装和缺失文件修复；内容未变、仅修正私钥权限以及任何下载/校验/安装失败均不发送成功通知。部分批次失败时成功组仍通知，消息明确说明尚未确认外层服务 reload。
+- push 使用每轮开始时间检查 NotAfter，剩余时长严格少于 15 × 24 小时才告警，恰好 15 天不告警。每次 push 都重新检查，不根据证书变化去重。检查在私钥验证及 OSS 上传前进行，确保缺私钥、过期或上传失败时临期事件仍能发送；过期事件不能使证书绕过验证。
+- 任务结束时合并本轮事件并分条发送，每条文本最多 12000 字节。支持机器人关键词/IP 验证和加签：以 Secret 为 HMAC-SHA256 密钥，对毫秒 timestamp + 换行 + Secret 签名，标准 Base64 后由 URL 查询参数编码发送。重试会重新生成 timestamp 和签名。
+- HTTP 200 且 JSON errcode 明确为 0 才算成功。网络错误和 HTTP 429/5xx 最多尝试三次，退避 1 秒、2 秒；每次 HTTP 请求时限 10 秒，单条消息总时限 15 秒，响应最多 64 KiB。不跟随重定向，不打印原始网络错误、响应 errmsg 或机器人 URL，防止泄露 Token/Secret。
+- 通知失败记明确日志，不改变分发返回状态，不回滚文件、不阻断外层 reload。暂不维护持久通知队列；失败的替换成功通知不会在后续“内容未变”的 pull 中补发，临期告警会在下轮 push 再次尝试。网络超时后的重试可能产生重复消息。
 
-[acme.eab]                 # ZeroSSL 等需要外部账户绑定的 CA 才填
-kid = ""
-hmac = ""
+机器人若启用关键词验证，须将 `certsync` 设为允许的关键词；若启用加签，填写 Secret；若限制 IP，允许对应机器的出口 IP。该通知只覆盖用户要求的两个事件，不能代替服务侧证书到期检查和其他故障告警。
 
-[alidns]                   # 仅签发机需要;留空则读环境变量
-access_key = ""            # env: ALICLOUD_ACCESS_KEY
-secret_key = ""            # env: ALICLOUD_SECRET_KEY
+## 9. acme.sh 接入
 
-# ─── 通用 ─────────────────────────────────────────────────
-[oss]
-endpoint = "oss-cn-hangzhou.aliyuncs.com"
-region = "cn-hangzhou"     # V2 SDK 必填(V4 签名用)
-bucket = "my-cert-bucket"
-prefix = "certsync"           # --staging 时强制替换为 certsync-staging(3 节)
-access_key = ""            # env: OSS_ACCESS_KEY_ID(签发机=上传账号,业务机=拉取账号)
-secret_key = ""            # env: OSS_ACCESS_KEY_SECRET
+按官方方式安装到 /opt/acme.sh，使用已验证的版本。关闭安装器生成的默认 cron，统一由第 10 节调度。Go 不实现续期阈值、CA 选择或账户管理。
 
-[crypto]
-key_file = "/etc/certsync/certsync.key"    # 或 env: CERTSYNC_KEY(base64,优先)
+### 9.1 首签与导出
 
-[state]
-dir = "/var/lib/certsync"
-lock_file = "/run/certsync.lock"
-
-# ─── 业务机 ───────────────────────────────────────────────
-[pull]
-check_cmd  = ["nginx", "-t"]               # 空数组 = 跳过检查(不建议)
-reload_cmd = ["systemctl", "reload", "nginx"]
-backup_dir = "/var/lib/certsync/backup"
-expire_alert_days = 15                     # 剩余低于此值,每轮 pull 都告警
-post_reload_probe = true                   # reload 后本机 127.0.0.1 SNI 探测实际服务证书指纹(7.2 节)
-
-[[pull.targets]]                           # 数组段,多证书组时重复此块(16 节)
-domain = "example.com"                     # 必须等于 acme.domains[0]
-cert_file = "/etc/nginx/certs/example.com/fullchain.pem"   # 落地路径可按环境调整
-key_file  = "/etc/nginx/certs/example.com/privkey.pem"
-
-[alert]                    # 多通道:已配置的通道并行扇出同一事件;全空 = 不告警(12.2 节)
-
-[alert.webhook]            # 通用 JSON POST(自建接收端;不用就整段删除)
-url = ""
-
-[alert.webhook.headers]    # 自定义请求头(鉴权 token 等),随请求发送
-Authorization = ""         # 例 "Bearer xxx"
-
-[alert.dingtalk]           # 钉钉群自定义机器人
-webhook = ""               # https://oapi.dingtalk.com/robot/send?access_token=…
-secret = ""                # env: DINGTALK_SECRET(机器人安全设置选"加签"时必填)
-at_mobiles = []            # 告警 @ 的手机号(可空)
-
-[alert.mail]               # SMTP 邮件
-host = ""                  # 例 smtp.example.com
-port = 465                 # 465=隐式TLS / 587=STARTTLS / 25=仅限内网中继
-username = ""              # env: ALERT_MAIL_USER
-password = ""              # env: ALERT_MAIL_PASS
-from = "certsync@example.com"
-to = ["ops@example.com"]
-```
-
-配置加载顺序:toml 值 → 空则取环境变量(表内标注)→ 仍空报错退出。敏感值两种放法:① **直填 toml**——整个 config.toml 降为 0600,不可再入配置仓库(单机/开发推荐);② 拆到 `/etc/certsync/certsync.env`(0600,cron 行前缀 `. /etc/certsync/certsync.env && ` 注入,11.2 节),toml 保持无密钥可入库(多机生产推荐)。
-
----
-
-## 9. 技术选型
-
-| 用途 | 选择 | 钉死版本 | 说明 |
-|---|---|---|---|
-| ACME | `github.com/go-acme/lego/v5`(库形态) | v5.6.0 | Traefik 同款,alidns provider 内置;v5 为当前主线(v4 已停止演进),支持 ARI / ACME profiles;替代 acme.sh |
-| OSS | `github.com/aliyun/alibabacloud-oss-go-sdk-v2` | v1.6.1 | 官方新一代 SDK(完全重写的 V2,官方手册即此版);旧 `aliyun-oss-go-sdk/v3` 已被其取代 |
-| 证书解析/校验 | 标准库 `crypto/x509` | — | SAN/有效期/密钥配对,不 shell 调 openssl |
-| 加密 | 标准库 `crypto/aes` + `cipher.NewGCM` | — | 见 6.1 节 |
-| CLI | `github.com/spf13/cobra` | v1.10.2 | 子命令 + flag |
-| 配置 | `github.com/BurntSushi/toml` | v1.6.0 | 仅解码(配置只读不写);零第三方依赖,事实标准 |
-| 日志 | 标准库 `log/slog` | — | 文本格式到 stdout,cron 重定向到 /var/log/certsync.log(11.2 节) |
-| 邮件告警 | 标准库 `net/smtp` | — | 465 隐式 TLS 自行 tls.Dial 后接 NewClient,几十行;不引第三方库 |
-| 文件锁 | `golang.org/x/sys/unix` `Flock` | v0.49.0 | |
-| 重试 | 自实现 20 行指数退避 | — | 减少供应链面 |
-| 构建 | Makefile(GOOS/GOARCH 交叉编译),版本 `-ldflags` 注入;CI 跑 `staticcheck` + `gosec` + `govulncheck`(依赖已知漏洞)+ `gitleaks`(密钥泄露扫描) | — | 工具碰私钥,值得安全扫描;发布产物附 SBOM,见 11.1 节 |
-
-Go 版本:**1.27**(2026-08 发布的当前稳定线);`go.mod` 钉死直接依赖版本,上表"钉死版本"为 2026-10-30 经 Go module proxy 核实的最新正式版。
-
-CI:**GitHub Actions**——push/PR 跑 lint(`staticcheck`/`gosec`/`govulncheck`/`gitleaks`)+ 单测 + pebble E2E(15 节 CI 层);打 tag 触发交叉构建与发布产物(11.1 节),私钥类凭证用 GitHub Encrypted Secrets。
-
----
-
-## 10. 项目结构
-
-```
-certsync/
-├── main.go                    # 入口,注入 version
-├── internal/
-│   ├── cli/                   # cobra 命令:root/keygen/issue/renew/push/pull/status
-│   ├── config/                # toml 加载、默认值、env 回退
-│   ├── cryptoutil/            # AES-GCM、keygen、密钥加载
-│   ├── certutil/              # 解析、指纹、SAN 覆盖、密钥配对、续期窗口
-│   ├── store/                 # OSS 读写、meta.json、上传顺序约定
-│   ├── acme/                  # lego 封装:账户管理、DNS-01、Obtain(ObtainRequest 必须 Bundle: true,否则 res.Certificate 只含叶子证书,链不完整)
-│   ├── deploy/                # 原子替换、备份、check/reload、回滚
-│   └── alert/                 # webhook 通知
-├── deploy/
-│   ├── cron.issuer.example      # 签发机 /etc/cron.d/certsync 模板(renew + state 备份)
-│   ├── cron.pull.example        # 业务机模板(pull 每 6 小时 + @reboot 补跑)
-│   ├── logrotate.example        # /etc/logrotate.d/certsync 模板(可选)
-│   ├── config.example.toml
-│   └── certsync.env.example
-├── Makefile
-├── DESIGN.md                  # 本文档
-└── README.md                  # 快速上手(实施阶段编写)
-```
-
----
-
-## 11. 部署方案
-
-### 11.1 二进制分发
-
-- CI 产出 `certsync-linux-amd64` / `certsync-linux-arm64` + `SHA256SUMS` + SBOM(syft)
-- 存放于同一 OSS Bucket 的 `dist/` 前缀(走拉取账号的只读权限之外单独授权,或直接复用手工分发)
-- 安装脚本:下载 → sha256 校验 → `install -m 755` 到 `/usr/local/bin/certsync` → `certsync version`
-- 校验体系有意保持 SHA256 单层、不引入签名:**同源替换风险由写权限隔离兜底**——certs/ 与 dist/ 前缀的上传凭证相互独立(6.2 节上传账号仅可写 certs/),攻破任一凭证都换不掉另一前缀的内容
-- 升级:替换二进制即可(cron oneshot 形态无常驻进程,下一轮 cron 自动用新版);多机版本差异通过 `certsync version` 巡检
-
-### 11.2 cron 部署
-
-调度统一用 Linux cron(`/etc/cron.d/` drop-in,0644 root:root,crond 自动加载、无需重载),**不引入 systemd 单元**——保持简单,任何发行版行为一致,与 acme.sh 原有形态同类。所弃 systemd 能力的代价与补偿见 11.2.1 对照表。
-
-签发机 `/etc/cron.d/certsync`(模板 `deploy/cron.issuer.example`):
-
-```cron
-SHELL=/bin/sh
-PATH=/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-
-# 每日 03:23 续期检查(到窗口才签发);失败由 on-failure 兜底告警
-23 3 * * * root /usr/local/bin/certsync --config /etc/certsync/config.toml renew >>/var/log/certsync.log 2>&1 || /usr/local/bin/certsync --config /etc/certsync/config.toml on-failure renew >>/var/log/certsync.log 2>&1
-
-# 每日 04:33 state 备份(6.5 节):打包 accounts/ + certs/ 到 state-backup/,保留最近 14 份
-# 注意:crontab 里 % 是换行语义,date 格式串必须写成 \%
-33 4 * * * root install -d -m 700 /var/lib/certsync/state-backup && tar -czf /var/lib/certsync/state-backup/$(date -u +\%Y\%m\%dT\%H\%M\%SZ).tar.gz -C /var/lib/certsync accounts certs && ls -1t /var/lib/certsync/state-backup/*.tar.gz | tail -n +15 | xargs -r rm -f >>/var/log/certsync.log 2>&1
-```
-
-业务机 `/etc/cron.d/certsync`(模板 `deploy/cron.pull.example`):
-
-```cron
-SHELL=/bin/sh
-PATH=/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-
-# 每 6 小时拉取(指纹相同即跳过);失败由 on-failure 兜底告警
-# 多台业务机把 41 改成各机不同的分钟(如 11/23/37/49)——错峰,也避免钉钉限流(12.2 节)
-41 */6 * * * root /usr/local/bin/certsync --config /etc/certsync/config.toml pull >>/var/log/certsync.log 2>&1 || /usr/local/bin/certsync --config /etc/certsync/config.toml on-failure pull >>/var/log/certsync.log 2>&1
-
-# 重启后补跑一次(等价 timer 的停机补跑;sleep 120 等网络就绪)
-@reboot root sleep 120 && /usr/local/bin/certsync --config /etc/certsync/config.toml pull >>/var/log/certsync.log 2>&1
-```
-
-要点:
-
-- **失败兜底**(主流程因配置错/网络不通/二进制损坏而失败时,进程内告警代码可能根本没执行到):命令尾部 `|| certsync on-failure <renew|pull>` 补一刀,发 `job_failed` 事件(12.1 节)。可能与进程内告警重复(同一故障收到两条),刻意为之——宁可重复不可漏报。`on-failure` 保持极短代码路径:只读告警配置、发送事件,不触碰 ACME/OSS/deploy 任何逻辑。二进制整体缺失时钩子同样起不来,但 `/var/log/certsync.log` 与 cron 邮件(`MAILTO`)留痕可巡检(12.3 节),业务侧另有 `expiry_warning` 生命线(12.1 节)——三层兜底互不依赖
-- **日志**:cron 不经 journald,所有行显式重定向 `/var/log/certsync.log`;日志量小(每轮几行),量产后可加 `deploy/logrotate.example` → `/etc/logrotate.d/certsync`
-- **凭证注入**:cron 环境干净,两条路——① 直填 config.toml(整个文件 0600,8 节),推荐,最省事;② 保持 env 拆分时,命令前插 `. /etc/certsync/certsync.env && `(文件必须存在,否则整行失败)
-- **crontab 语法坑**:`%` 在 crontab 是换行语义,date 格式串必须 `\%`;全部用绝对路径(cron 的 PATH 与登录 shell 不同)
-
-#### 11.2.1 弃 systemd timer 的代价与补偿
-
-| 失去的 systemd 能力 | cron 侧补偿 | 剩余风险 |
-|---|---|---|
-| `Persistent=true` 停机补跑 | renew 本就每日跑,停机错过则次日自动再试(续期窗口 30 天,损失一天无影响);pull 由 `@reboot` 行补跑 | 停机跨多日时 renew 少跑几轮,可忽略 |
-| `network-online.target` | OSS 请求自带重试(7.4 节);`@reboot` 行 sleep 120;ACME 失败次日再试 + `issue_fail` 每日重试告警 | 开机 2 分钟内网络仍未就绪则该轮放弃,下轮再来 |
-| `RandomizedDelaySec` 随机错峰 | 各机 cron 分钟数手工错开 | 单签发机无随机需求;业务机 >20 台时需认真分配分钟段 |
-| journald 统一日志/失败留痕 | 显式重定向日志文件 + `job_failed` 钩子 + `expiry_warning` 生命线 | 多一个日志文件要管理(logrotate 可选) |
-
-### 11.3 单机安装清单
-
-1. `/usr/local/bin/certsync`(0755)
-2. `/etc/certsync/config.toml`(0644,按角色裁剪)
-3. `/etc/certsync/certsync.env`(0600,RAM AK/SK、ALICLOUD AK/SK、钉钉加签密钥、邮箱密码)
-4. `/etc/certsync/certsync.key`(0600,带外分发)
-5. `mkdir -p /var/lib/certsync`(0700);确认 NTP 与 cron 守护进程运行中
-6. 按角色安装调度:`cp deploy/cron.<issuer|pull>.example /etc/cron.d/certsync`(0644 root:root);可选 `cp deploy/logrotate.example /etc/logrotate.d/certsync`
-
-`certsync.env` 只放 config.toml 中标注了 env 回退的敏感值,一行一个 `KEY=value`(sh 可直接 source 的语法,cron 行前缀注入,11.2 节)。两类机器**变量名相同、值必须是不同 RAM 账号**(上传/拉取),严禁一份拷全网;`CERTSYNC_KEY` 虽可放 env 且优先级更高,但设计默认走独立 key 文件,不放这里:
+以下命令以 root 执行，先替换真实域名和邮箱，初始化时暂不启用定时任务：
 
 ```bash
-# ── 签发机 ──
-ALICLOUD_ACCESS_KEY=…       # alidns DNS-01(lego)
-ALICLOUD_SECRET_KEY=…
-OSS_ACCESS_KEY_ID=…         # OSS 上传 RAM 账号(仅 oss:PutObject)
-OSS_ACCESS_KEY_SECRET=…
-DINGTALK_SECRET=…           # 告警凭证按已配置的通道放,未配置的通道不放
-ALERT_MAIL_USER=…
-ALERT_MAIL_PASS=…
+set -euo pipefail
+umask 077
+set -a
+. /etc/certsync/issuer.env
+set +a
 
-# ── 业务机 ──
-OSS_ACCESS_KEY_ID=…         # OSS 拉取 RAM 账号(仅 oss:GetObject),与签发机同变量名、不同账号
-OSS_ACCESS_KEY_SECRET=…
-DINGTALK_SECRET=…
-ALERT_MAIL_USER=…
-ALERT_MAIL_PASS=…
+# 每组执行一次，另一个组使用不同 ACME_DOMAINS；不是 push 的全局过滤条件。
+export ACME_DOMAINS='*.example.com,example.com'
+IFS=',' read -r -a domains <<< "$ACME_DOMAINS"
+export_dir="$CERTSYNC_SOURCE_DIR/${domains[0]}"
+install -d -m 700 "$export_dir"
+domain_args=()
+for domain in "${domains[@]}"; do
+  domain_args+=(-d "$domain")
+done
+"$ACME_HOME/acme.sh" --register-account --home "$ACME_HOME" \
+  --server "$ACME_SERVER" -m "$ACME_EMAIL"
+"$ACME_HOME/acme.sh" --issue --home "$ACME_HOME" \
+  --server "$ACME_SERVER" --dns dns_ali --keylength ec-256 \
+  "${domain_args[@]}"
+"$ACME_HOME/acme.sh" --install-cert --home "$ACME_HOME" \
+  -d "${domains[0]}" --ecc \
+  --fullchain-file "$export_dir/fullchain.pem" \
+  --key-file "$export_dir/privkey.pem"
+/usr/local/bin/certsync push
 ```
 
----
+acme.sh 使用 Ali_Key、Ali_Secret 调用阿里云 DNS。通过 --install-cert 导出到固定路径，不打包 acme.sh 内部工作文件；续期会重新安装到记录的导出路径。初始命令从本次手动指定的 ACME_DOMAINS 读取域名；使用英文逗号且不加空格，第一项为小写普通或通配主域名。上例同时把第一项作为 certsync 组名，因此导出到字面目录 `*.example.com/`。使用原有 `ACME_DOMAINS='example.com,*.example.com'` 仍可导出为普通组 `example.com/`。为其他组重复申请和导出步骤；随后一次 push 处理全部子目录。后续修改域名或 CA 由用户重新执行申请与导出步骤，单纯改 env 不会修改 acme.sh 已保存的证书配置。
 
-## 12. 监控与告警
+不设置上传 hook 或 reloadcmd：上传由每日任务独立执行，上传失败后不必等下次续期。
 
-### 12.1 事件表
+已有证书不必为组名重签。acme.sh 保存的主域名与 certsync 导出组名可以不同：主域名为 `example.com`、SAN 同时包含 `*.example.com` 的已有证书，可以继续用 `--install-cert -d example.com --ecc`，把两个输出路径改为 `"$CERTSYNC_SOURCE_DIR/*.example.com/fullchain.pem"` 和 `"$CERTSYNC_SOURCE_DIR/*.example.com/privkey.pem"`。先创建该字面目录，再导出、push，并同步业务机的组列表和服务路径。签发机自身使用该证书时，须同步服务路径并在导出命令中保留所需 reloadcmd。原有普通域名组无需改名；改名不会自动迁移或删除旧目录、旧 OSS 对象。
 
-| event | 端 | 含义 | 默认级别 |
-|---|---|---|---|
-| `issue_ok` | 签发 | 新证书签发并上传成功 | info |
-| `issue_fail` | 签发 | 签发或上传失败(**每日重试+每日告警**) | error |
-| `renew_skipped` | 签发 | 未到续期窗口(仅 debug 日志,不推送) | - |
-| `install_ok` | 业务 | 安装并 reload 成功(指纹变化才发) | info |
-| `install_fail` | 业务 | 校验失败/回滚发生 | error |
-| `expiry_warning` | 业务 | 剩余天数 < expire_alert_days(每轮都发,**这是兜底生命线**) | error |
-| `job_failed` | 两侧 | cron 兜底钩子:任务非零退出且进程内告警未执行/未覆盖时发出(11.2 节,可能与进程内事件重复) | error |
+### 9.2 每日包装脚本
 
-`expiry_warning` 独立于签发链路存在:即使签发端整体瘫痪,各业务机仍会持续喊"证书快过期了",把静默失败变成显式事故预警。
+仅保留一个薄 Bash 包装 /usr/local/sbin/certsync-issuer-job，加载环境、串联工具并保留失败状态。业务逻辑仍在 Go：
 
-### 12.2 通道与适配
+```bash
+#!/bin/bash
+set -euo pipefail
+umask 077
+set -a
+. /etc/certsync/issuer.env
+set +a
 
-事件产生后**同时扇出到所有已配置的通道**(`[alert.webhook]` / `[alert.dingtalk]` / `[alert.mail]`,全空 = 不告警;邮件主题 `[certsync] <级别> <event> <host> <域名>`,正文为下方 payload)。webhook 通道支持 `[alert.webhook.headers]` 自定义请求头(鉴权);header 值明文存于 toml(0644 可见),自建接收端应配合内网/IP 白名单,更高安全要求走钉钉/邮件通道。
+acme_rc=0
+"$ACME_HOME/acme.sh" --cron --home "$ACME_HOME" || acme_rc=$?
+push_rc=0
+/usr/local/bin/certsync push || push_rc=$?
 
-通用通道 payload(JSON POST):
-
-```json
-{
-  "event": "install_fail",
-  "host": "web-01",
-  "domain": "example.com",
-  "detail": "nginx -t failed: …",
-  "time": "2026-10-29T12:00:00+08:00"
-}
+printf 'acme_exit=%s push_exit=%s\n' "$acme_rc" "$push_rc"
+if (( acme_rc != 0 || push_rc != 0 )); then
+  exit 1
+fi
 ```
 
-钉钉群自定义机器人的协议要点(踩坑点提前写死,实现按此验收):
+即使 CA 当天不可用，也尝试上传已有有效产物，但整个任务仍报告续期失败。文件过期或不完整时，push 自己拒绝发布。
 
-- **加签**:机器人安全设置选"加签"时 `secret` 必填,请求需附加 `timestamp`(毫秒)与 `sign`(HMAC-SHA256,密钥与被签串均为 `"<timestamp>\n<secret>"`,结果 base64 后 urlencode)。**timestamp 与钉钉服务器时差超过 1 小时直接拒绝——NTP 是硬前提,与 7.5 节证书有效期校验共用同一依赖**
-- **响应语义**:HTTP 200 ≠ 成功,必须校验 body 的 `errcode == 0`(关键词不匹配、签名错误、限流都以 200 + errcode 返回;实现只看 HTTP 状态码 = 告警静默丢失)
-- **关键词过滤**:机器人若配"自定义关键词",消息文本必须包含该词——告警模板首词固定为 `certsync`,机器人侧把关键词配成 `certsync` 即可
-- **限流**:单机器人 20 条/分钟,超限封禁 10 分钟;各机 cron 分钟数手工错开(11.2 节)天然错峰,常态足够;机器数 > 20 且同时故障的极端场景需按机房拆多个机器人
-- 消息用 markdown 类型,`at_mobiles` 非空时带上 @ 列表
+## 10. 调度、锁和超时
 
-企微群机器人与钉钉同构(`[alert.wecom]`,token 参数与格式微差),需要时按钉钉同款方式接入,不影响核心。
+锁统一由外层 Linux flock 提供，Go 不维护第二套锁。签发机锁覆盖申请、导出和上传；业务机锁覆盖下载、替换和 reload。手动操作也使用相同锁。签发机一把锁覆盖同一 ACME_HOME 的统一续期和整个批量上传；业务机一把锁覆盖选定组的整批下载、安装和统一 reload；同一个输出树不得被其他任务并发改写。
 
-### 12.3 巡检
+/etc/cron.d/certsync 按机器角色选用以下行。GNU timeout、flock、nginx、systemctl 的可用路径按发行版确认：
 
-- `certsync status`:各 target 域名/到期时间/剩余天数
-- `tail -100 /var/log/certsync.log`(cron 全部输出重定向于此,11.2 节;`job_failed` 兜底也依赖它留痕)
-- **外部视角**(巡检的本质是验证 nginx 实际在服务的证书,而非只看磁盘文件):任意外部机器 `openssl s_client -connect <域名>:443 -servername <域名> </dev/null 2>/dev/null | openssl x509 -noout -fingerprint -sha256 -enddate`,与 meta.json 指纹比对
-- **CA 侧独立审计**:证书一旦签发必然进入 CT 日志,`crt.sh/?q=<域名>` 可查——"签发成功"不依赖 certsync 自己的报告
+```cron
+SHELL=/bin/bash
+PATH=/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
----
+# 签发机：每日检查续期，并上传已有有效证书；总时限 30 分钟
+23 3 * * * root flock -n /run/certsync-issuer.lock timeout 1800 /usr/local/sbin/certsync-issuer-job >>/var/log/certsync.log 2>&1
 
-## 13. 失败场景与处置
+# 业务机：每 6 小时；加载环境后批量拉取，整批成功再统一 reload；总时限 30 分钟
+41 */6 * * * root flock -n /run/certsync-pull.lock timeout 1800 /bin/bash -ec 'set -a; . /etc/certsync/pull.env; set +a; /usr/local/bin/certsync pull; nginx -t; systemctl reload nginx' >>/var/log/certsync.log 2>&1
+```
 
-| 场景 | 系统行为 | 人工动作 |
-|---|---|---|
-| CA/DNS API 故障,签发失败 | 旧证书继续服务;每日重试 + 每日 `issue_fail` 告警 | 30 天窗口内修复即可,无紧迫性 |
-| 签发后 OSS 上传失败 | 证书在本地 state;下轮 renew 重试(未到窗口会先尝试 push) | 手动 `certsync push` |
-| OSS 对象被误删 | pull 报 not found,告警;本地证书不受影响 | 签发机 `certsync push` 重建 |
-| 上传中途断掉(meta 与对象不一致) | pull 指纹校验拒绝安装 | 无需处理,下轮上传覆盖自愈 |
-| 某业务机主密钥没换/输错 | 解密失败,保留旧证书,`install_fail` 告警 | 修该机密钥 |
-| nginx 配置本身有错 | `nginx -t` 拦截,回滚,`install_fail` 告警 | 修 nginx 配置,与证书无关 |
-| reload 失败 | 回滚磁盘文件告警;nginx 内存中仍是旧证书,服务未断 | 手工 `nginx -t` 排查 |
-| 业务机连续多轮拉取失败 | 本地证书持续老化,临期触发 `expiry_warning` | 按 15 天缓冲修复 |
-| **签发机宕机/丢失** | 证书仍全网有效;最长 30 天无续期 | 新机:恢复 state 备份 → 装 certsync → 完事;无备份则重新注册 ACME 账户 + `issue`(证书会立即重签,指纹变化自动全网分发) |
-| 主密钥泄露 | — | 执行 6.4 节轮换流程 |
+业务机每次整批 pull 成功都检查和 reload，包括内容未变时。这使上一轮 reload 失败能够下轮重试，无需维护服务部署状态或特殊退出码。不要因内容相同直接跳过整个外层任务。不需要自动 reload 的环境可去掉服务命令。
 
----
+Go 中 OSS 单次请求超时 30 秒，最多 3 次尝试，退避 1 秒、2 秒；每组上传或下载的网络阶段上限 120 秒；整批总耗时随组数增长，由外层 30 分钟任务时限约束。SDK 内部重试必须计入上限，不能与外层无限叠加。配置、认证、解密和证书校验错误不重试。
 
-## 14. CA 兼容性策略(华为老设备问题)
+外层总超时覆盖 ACME、文件操作、钉钉通知和服务命令。超时不能保证完成两文件替换，恢复边界见第 7 节。锁竞争、超时和分发错误均保留非零状态。钉钉仅发送第 8.1 节的事件，其他故障告警和外部到期监控由现有体系接入。
 
-- 默认 Let's Encrypt;配置 `acme.ca_server` + `acme.eab` 即可切 ZeroSSL(免费额度以官网为准)或任何 ACME CA——**只改签发机配置,分发链路与业务机零改动**
-- 决策依据:先实测老设备占比,占比可忽略则不切
-- 购买的商业 DV 证书(阿里云 DigiCert 等)手工导入:将 fullchain 存为签发机 `state/certs/<domain>/fullchain.pem`、私钥存为 `state/certs/<domain>/privkey.pem`,执行 `certsync push` 即入分发链路,业务机自动更新——**手动导入与自动签发共用同一条管道**
-- 切换灰度:业务机 pull 支持 `--domain` 过滤,可指定单台先换证书观察老机型表现
+## 11. 失败行为
 
----
-
-## 15. 实施计划与迁移
-
-### Phase 0:开发 + 验收(分层:CI 可重复 → staging → 演练)
-
-**CI 层(任何人 `go test ./...` 可复现,不触外网)**
-
-- [ ] 单元测试:AES-GCM 往返/防篡改、SAN 通配匹配、密钥配对、fullchain 结构校验(首块叶子+至少一张中间证书)、部署回滚(伪命令)
-- [ ] 本地 ACME E2E:CI 内起 pebble(LE 官方 ACME 测试服务器)+ challtestsrv(应答 DNS-01),完整走 issue→push→pull→安装→探测——签发逻辑的回归不依赖真实 CA
-
-**staging 层(真实 CA、非受信证书,走 3 节的 `--staging` 隔离链路)**
-
-- [ ] LE staging 端到端:issue → OSS(-staging 前缀)→ 测试机 pull → nginx reload → 探测指纹一致 → curl 验证
-- [ ] 产物证书过 zlint(CA 签发同款 lint 工具,要求 0 error);testssl.sh 验证链完整
-- [ ] `nginx -t` 故意失败 → 确认回滚生效;构造探测指纹不一致 → 确认只告警、不误回滚(7.2 节例外路径)
-- [ ] 断网 pull → 确认无副作用;告警全部事件真实触达
-
-**演练层(13 节的失败场景不是纸面推演,逐条实走)**
-
-- [ ] OSS 对象误删 → `push` 恢复
-- [ ] 签发机 state 全毁 → 备份重建、无备份重注册账户,两条恢复路各走一遍
-- [ ] 主密钥轮换全流程(6.4 节),含过渡期旧密钥机器"保留旧证书 + 告警"的行为验证
-
-### Phase 1:正式环境共存(观察期)
-
-- 签发机用正式 CA `issue` 一次,但 acme.sh 的 cron **继续运行**
-- certsync pull 先只接入 1~2 台非核心业务机
-- 观察 1 个续期周期(60~90 天)或至少 2 周
-
-### Phase 2:切换
-
-- [ ] 注释/删除 acme.sh 的 crontab 行(`crontab -l | grep -v acme.sh | crontab -`;保留 acme.sh 安装,作为回滚手段)
-- [ ] 全量业务机接入 pull cron
-- [ ] 验证 `certsync version` 全网一致、`certsync status` 到期时间正常
-
-### Phase 3:收尾
-
-- acme.sh 观察 1 个月无异常后卸载;归档本文档与 runbook
-
-### 回滚预案
-
-任意阶段出问题:恢复被删的 acme.sh crontab 行 + 各机回挂 acme.sh 产物即可。certsync 是纯增量部署,不修改 acme.sh 任何状态,两者可无限期共存。
-
----
-
-## 16. 未来扩展(按需)
-
-- **多证书组**:config 增加 certs 数组,pull 按 domain 路由到组;当前单组够用
-- **KMS 信封加密**:主密钥托管阿里云 KMS,业务机用实例 RAM 角色换取数据密钥,消灭手工分发;接口已按"密钥加载器"隔离,替换实现不动主体
-- **自更新**:从 OSS dist/ 拉新版本自替换(校验 sha256)
-- **Prometheus metrics**:pull 成功/失败计数、证书剩余天数 gauge、blackbox TLS 探测(从外部探测 nginx 实际服务的证书,与磁盘文件状态解耦)
-- **Kubernetes**:上 K8s 后整体退役,换 cert-manager(1.1 节)
-- **ZeroSSL/多 CA 自动降级**:主 CA 限额时自动切备用(依赖 ARI,暂无必要)
-
----
-
-## 附录A:决策依据与独立验证
-
-正文标注的论断,其一手出处与"任何人可复现"的验证方式:
-
-| # | 论断/决策 | 一手素材 | 独立验证 |
-|---|---|---|---|
-| ① | 同组域名 7 天 5 张、无豁免;staging 限额显著更高 | LE 官方 https://letsencrypt.org/docs/rate-limits/ | 打开该页比对原文 |
-| ② | 泛域名仅 DNS-01 可验证;ACME 语义;ARI 续期建议 | RFC 8555;ARI = RFC 9773(2025-09 发布) | rfc-editor.info 阅读原文 |
-| ③ | 老设备不信任 ISRG Root X1 的时间线(DST Root X3 交叉签名 2024-09-30 到期) | LE 官方 https://letsencrypt.org/certificates/ | 读该页 + 老设备真机实测(14 节决策前置) |
-| ④ | `Bundle: true` 时 `res.Certificate`=叶子+中间;alidns 读 `ALICLOUD_*` 环境变量 | lego 源码 `certificate/certificates.go`、`providers/dns/alidns/alidns.go` | clone 后 grep;E2E 后数产物 PEM 块数(7.1 节已固化为安装校验) |
-| ⑤ | OSS SDK V2 凭证环境变量名、region 必填 | SDK 源码 + 官方 V2 手册(9 节引用) | grep 源码 / 读手册 |
-| ⑥ | 依赖钉死版本为最新正式版 | Go module proxy | `go list -m <模块>@latest`,任何人可查 |
-| ⑦ | "签发成功"这一事实 | CA 侧 CT 日志(与 certsync 无关的第三方) | crt.sh 查询域名,证书必然在册 |
-| ⑧ | "nginx 在服务正确证书" | 传输层实测,而非文件状态 | 12.3 节 openssl s_client 指纹比对 |
-
-## 附录B:术语
-
-| 术语 | 含义 |
+| 场景 | 处理 |
 |---|---|
-| ACME | CA 自动化证书协议,Let's Encrypt/ZeroSSL 均实现 |
-| DNS-01 / HTTP-01 | 域名验证方式;泛域名只支持 DNS-01 |
-| EAB | External Account Binding,ZeroSSL 等要求的账户绑定凭证 |
-| SAN | 证书中的主题备用名称,即证书覆盖的域名列表 |
-| 指纹 | 证书 DER 编码的 SHA-256,本文中即"证书版本号" |
-| ARI | ACME Renewal Info,CA 建议的续期时间,可错峰规避限额 |
+| CA / DNS 失败 | 尝试上传旧的有效产物，整次任务报告失败，下轮再试 |
+| 某组申请成功、上传失败 | 保存导出产物，继续其他组；整批非零退出，手动 push 或次日重传，不重新申请 |
+| OSS 对象缺失 | pull 失败，保留本地；手动 push 或每日任务恢复 |
+| 某组下载、解密、校验失败 | 保留该组旧文件，继续其余组；整批非零退出，不执行统一 reload |
+| 本地缺私钥 | 重新安装完整配对文件，不按叶子指纹跳过 |
+| 两次 rename 之间失败 | 不 reload；下轮重试或人工恢复，无自动回滚 |
+| nginx 检查 / reload 失败 | 外层失败，不回滚文件；修复配置后重跑完整任务 |
+| 签发机丢失 | 从现有备份恢复 acme.sh 目录和环境配置；无备份则重新初始化申请 |
+| 钉钉消息发送失败 | 记录脱敏错误，不影响证书分发退出状态和外层 reload，无持久通知队列 |
+
+## 12. 改造与验收
+
+### 12.1 实现范围
+
+- 保留 Go 入口、push、pull 和 version。
+- 已删除内置 ACME、签发命令、原多渠道告警和 TOML 依赖，清理 lego 等依赖；仅增加第 8.1 节的两类钉钉通知。
+- config 按角色读取环境；oss.go 按显式对象键传输；cli.go 上传遍历总目录，下载按组列表逐个安装；crypto.go 的 JSON 包和加密格式保持不变。
+- cert.go 共用证书校验；install.go 负责内容比较、权限检查、临时写入和替换。
+- 重写 env 示例、cron 模板、部署准备清单和相关测试。
+- Go 文件直接放在仓库根目录，统一为 main 包；按职责分文件，不保留 internal 层。测试辅助证书生成器放在 testcert_test.go，仅参与测试编译。
+
+代码和 deploy/ 模板已按此范围改造。实际 CA 签发、真实 OSS 最小权限及 nginx 生效验证须按部署清单人工验收。
+
+### 12.2 必须验证
+
+- 加密往返、错误密钥、篡改、截断、格式错误、超限包。
+- 过期证书、错误域名、不配对私钥、缺失中间证书、重复叶子伪链。
+- 缺失私钥能够修复；两个文件相同时不重写；私钥权限始终满足要求。
+- 请求按上限退出；替换前失败保留旧文件；第二次 rename 失败明确报错。
+- 干净 cron 环境中变量能传给子进程，日志和命令参数不暴露密钥。
+- 模拟 OSS 跑通多组 push → 批量 pull，验证每个对象是独立 JSON 加密包；真实最小权限账号验证上传下载。
+- 普通域名与通配域名组混用，字面星号在 OSS 对象键和本地目录中原样保留；同一根域名的普通组和通配组彼此独立，选择通配组不展开其他组。通配组必须有精确通配符 SAN，不误接受根域名或具体子域名证书，也不强制额外包含根域名 SAN。
+- 空目录、旧平铺目录、嵌套层级、非法组名、错误证书、缺私钥和软链接不能误发布；一组网络失败后后面的有效组仍上传，最终报告非零。
+- 批量下载校验选择列表、组目录隔离、同内容不重写、缺私钥修复；某组网络、解密、域名或安装失败后其余有效组继续，失败组旧文件不被下载／校验错误覆盖，最后非零退出。
+- 本地模拟机器人验证仅替换成功通知、未变静默、部分失败不漏报成功组；临期阈值小于/等于 15 天、过期仍告警但不上传、上传失败及重复 push 仍告警；签名、非零/缺失 errcode、无效响应、重试/取消和日志脱敏。
+- acme.sh 测试环境验证 DNS-01；正式证书在非核心机验证完整分发及 reload。
+- 演练上传失败后独立重传、错误密钥、OSS 缺失、reload 失败后重试；不反复强制申请正式证书。
+
+从单组上传升级时：签发机将 OSS_OBJECT_KEY 改为 OSS_PREFIX，总目录下按域名归组；不再配置上传端 CERTSYNC_DOMAINS。下载端移除 OSS_OBJECT_KEY、CERTSYNC_DOMAINS，改用 OSS_PREFIX、CERTSYNC_GROUPS，CERTSYNC_OUTPUT_DIR 改为输出总目录。程序拒绝旧单组变量，已导出的值需 unset 或重开 shell。已有 JSON 加密包格式保持兼容。
+
+现有 Go 测试通过不代表真实环境已验收。上线时关闭旧 certsync renew/pull 任务，确认仅有一套签发和部署调度。
+
+## 13. 参考资料
+
+- [acme.sh 官方说明：申请、导出与续期](https://github.com/acmesh-official/acme.sh)
+- [acme.sh 阿里云 DNS：Ali_Key / Ali_Secret](https://github.com/acmesh-official/acme.sh/wiki/dnsapi#11-use-aliyun-domain-api-to-automatically-issue-cert)
+- [acme.sh hook 与 reloadcmd](https://github.com/acmesh-official/acme.sh/wiki/using-pre-hook-post-hook-renew-hook-reloadcmd)
+- [阿里云 OSS Go SDK V2](https://github.com/aliyun/alibabacloud-oss-go-sdk-v2)
+- [Go crypto/cipher：AEAD](https://pkg.go.dev/crypto/cipher#AEAD)
+- [Go crypto/x509：验证链和有效期](https://pkg.go.dev/crypto/x509#Certificate.Verify)
+- [钉钉自定义机器人安全设置](https://open.dingtalk.com/document/robots/customize-robot-security-settings)
+- [钉钉自定义机器人发送群消息](https://open.dingtalk.com/document/orgapp/custom-robots-send-group-messages)
+
+外部工具以部署时固定版本的官方文档和验收结果为准。本文不绑定“最新版本”或固定证书有效天数。

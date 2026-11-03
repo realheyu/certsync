@@ -10,7 +10,7 @@ GOVULN      := golang.org/x/vuln/cmd/govulncheck@latest
 build:
 	go build -ldflags "$(LDFLAGS)" -o certsync .
 
-# 发布产物(§11.1):静态交叉编译 + SHA256SUMS
+# 发布产物：静态交叉编译 + SHA256SUMS
 build-linux-amd64:
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$(LDFLAGS)" -o certsync-linux-amd64 .
 
