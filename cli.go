@@ -21,15 +21,17 @@ type objectStore interface {
 }
 
 func NewRootCmd() *cobra.Command {
-	root := &cobra.Command{Use: "certsync", Short: "加密上传和下载证书包（配置全部来自环境变量）", Version: Version, SilenceUsage: true, SilenceErrors: true}
+	root := &cobra.Command{Use: "certsync", Short: "加密上传和下载证书包", Version: Version, SilenceUsage: true, SilenceErrors: true}
 	root.CompletionOptions.DisableDefaultCmd = true
+	var configPath string
+	root.PersistentFlags().StringVar(&configPath, "config", defaultConfigPath, "TOML 配置文件路径")
 	for _, name := range []string{"push", "pull"} {
 		description := "遍历总目录，逐组校验并加密上传 OSS"
 		if name == "pull" {
 			description = "按组列表批量下载，解密校验后安装到各自子目录"
 		}
 		root.AddCommand(&cobra.Command{Use: name, Short: description, Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := Load(cmd.Name())
+			cfg, err := Load(cmd.Name(), configPath)
 			if err != nil {
 				return err
 			}
@@ -163,7 +165,7 @@ func pushGroup(ctx context.Context, root *os.Root, group string, c *Config, st o
 
 func pullAll(ctx context.Context, out io.Writer, c *Config, st objectStore, roots *x509.CertPool, notices *notifications) error {
 	if len(c.Groups) == 0 {
-		return fmt.Errorf("缺少下载组列表 CERTSYNC_GROUPS")
+		return fmt.Errorf("缺少下载组列表 groups")
 	}
 	// Reject malformed groups before any downloads or filesystem changes.
 	for _, group := range c.Groups {

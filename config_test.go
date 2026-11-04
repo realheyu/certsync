@@ -1,72 +1,89 @@
 package main
 
 import (
-	"encoding/base64"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
-func setTestEnvironment(t *testing.T) {
+const testCommonConfig = `
+key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+oss_region = "cn-hangzhou"
+oss_bucket = "bucket"
+oss_prefix = "certsync/production/"
+oss_access_key_id = "fake"
+oss_access_key_secret = "secret"
+`
+
+const testPushConfig = `[push]
+source_dir = "/certs"
+` + testCommonConfig
+
+const testPullConfig = `[pull]
+output_dir = "/nginx/certs"
+groups = ["*.example.com", "other.com"]
+` + testCommonConfig
+
+func writeTestConfig(t *testing.T, contents string) string {
 	t.Helper()
-	vars := map[string]string{
-		"CERTSYNC_KEY":    base64.StdEncoding.EncodeToString(make([]byte, 32)),
-		"CERTSYNC_GROUPS": "example.com,other.com", "OSS_REGION": "cn-hangzhou",
-		"OSS_BUCKET": "bucket", "OSS_PREFIX": "certsync", "OSS_OBJECT_KEY": "", "CERTSYNC_DOMAINS": "",
-		"OSS_ACCESS_KEY_ID": "fake", "OSS_ACCESS_KEY_SECRET": "secret",
-		"CERTSYNC_SOURCE_DIR": t.TempDir(), "CERTSYNC_OUTPUT_DIR": t.TempDir(), "OSS_ENDPOINT": "",
-		"DINGTALK_WEBHOOK": "", "DINGTALK_SECRET": "",
+	filename := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(filename, []byte(contents), 0600); err != nil {
+		t.Fatal(err)
 	}
-	for name, value := range vars {
-		t.Setenv(name, value)
-	}
+	return filename
 }
 
-func TestDingTalkEnvironment(t *testing.T) {
-	setTestEnvironment(t)
-	t.Setenv("DINGTALK_WEBHOOK", "https://oapi.dingtalk.com/robot/send?access_token=private-token")
-	t.Setenv("DINGTALK_SECRET", "SEC-private-secret")
-	for _, command := range []string{"push", "pull"} {
-		cfg, err := Load(command)
-		if err != nil || cfg.DingTalkWebhook == "" || cfg.DingTalkSecret == "" {
+func TestDingTalkConfig(t *testing.T) {
+	const webhook = "https://oapi.dingtalk.com/robot/send?access_token=private-token"
+	const secret = "SEC-private-secret"
+	for command, settings := range map[string]string{"push": testPushConfig, "pull": testPullConfig} {
+		file := writeTestConfig(t, settings+fmt.Sprintf("dingtalk_webhook = %q\ndingtalk_secret = %q\n", webhook, secret))
+		cfg, err := Load(command, file)
+		if err != nil || cfg.DingTalkWebhook != webhook || cfg.DingTalkSecret != secret {
 			t.Fatalf("valid notification configuration rejected: %v", err)
 		}
 	}
-	for _, webhook := range []string{"", "http://oapi.dingtalk.com/robot/send", "https://user:private-token@example.com/send", "https://example.com/send#private-token", "://private-token"} {
-		t.Setenv("DINGTALK_WEBHOOK", webhook)
-		_, err := Load("pull")
+	for _, bad := range []string{"", "http://oapi.dingtalk.com/robot/send", "https://user:private-token@example.com/send", "https://example.com/send#private-token", "://private-token"} {
+		file := writeTestConfig(t, testPullConfig+fmt.Sprintf("dingtalk_webhook = %q\ndingtalk_secret = %q\n", bad, secret))
+		_, err := Load("pull", file)
 		if err == nil {
 			t.Fatal("invalid notification configuration accepted")
 		}
-		if strings.Contains(err.Error(), "private-token") || strings.Contains(err.Error(), "SEC-private-secret") {
+		if strings.Contains(err.Error(), "private-token") || strings.Contains(err.Error(), secret) {
 			t.Fatal("notification credentials exposed")
 		}
 	}
-	t.Setenv("DINGTALK_WEBHOOK", "https://oapi.dingtalk.com/robot/send?access_token=private-token")
-	t.Setenv("DINGTALK_SECRET", "")
-	if _, err := Load("pull"); err != nil {
+	file := writeTestConfig(t, testPullConfig+fmt.Sprintf("dingtalk_webhook = %q\n", webhook))
+	if _, err := Load("pull", file); err != nil {
 		t.Fatalf("keyword/IP based robot rejected: %v", err)
 	}
 }
-func TestEnvironment(t *testing.T) {
-	setTestEnvironment(t)
-	for _, cmd := range []string{"push", "pull"} {
-		if _, err := Load(cmd); err != nil {
-			t.Fatal(err)
-		}
-	}
-	tests := []struct{ name, value, cmd string }{
-		{"CERTSYNC_KEY", "bad-secret-value", "push"}, {"OSS_ACCESS_KEY_SECRET", "", "push"},
-		{"OSS_ENDPOINT", "http://localhost", "push"}, {"CERTSYNC_GROUPS", "example.com,,other.com", "pull"},
-		{"CERTSYNC_GROUPS", "", "pull"}, {"CERTSYNC_OUTPUT_DIR", "relative", "pull"},
-		{"CERTSYNC_SOURCE_DIR", "relative", "push"}, {"OSS_PREFIX", "", "pull"},
-		{"OSS_PREFIX", "/certsync", "push"}, {"OSS_PREFIX", "certsync/../other", "pull"},
-		{"OSS_PREFIX", "oss://bucket/x", "push"}, {"OSS_OBJECT_KEY", "certsync/example.com/bundle.enc", "pull"},
-		{"CERTSYNC_DOMAINS", "example.com,*.example.com", "pull"},
+
+func TestInvalidConfig(t *testing.T) {
+	tests := []struct {
+		name, command, contents string
+	}{
+		{"key", "push", strings.Replace(testPushConfig, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", "bad-secret-value", 1)},
+		{"missing credential", "push", strings.Replace(testPushConfig, `oss_access_key_secret = "secret"`, "", 1)},
+		{"endpoint", "push", testPushConfig + "oss_endpoint = \"http://localhost\"\n"},
+		{"group type", "pull", strings.Replace(testPullConfig, `["*.example.com", "other.com"]`, `"example.com"`, 1)},
+		{"group list", "pull", strings.Replace(testPullConfig, `["*.example.com", "other.com"]`, `[]`, 1)},
+		{"output path", "pull", strings.Replace(testPullConfig, "/nginx/certs", "relative", 1)},
+		{"source path", "push", strings.Replace(testPushConfig, "/certs", "relative", 1)},
+		{"empty prefix", "pull", strings.Replace(testPullConfig, "certsync/production/", "", 1)},
+		{"absolute prefix", "push", strings.Replace(testPushConfig, "certsync/production/", "/certsync", 1)},
+		{"relative path segment", "pull", strings.Replace(testPullConfig, "certsync/production/", "certsync/../other", 1)},
+		{"URL prefix", "push", strings.Replace(testPushConfig, "certsync/production/", "oss://bucket/x", 1)},
+		{"backslash prefix", "push", strings.Replace(testPushConfig, "certsync/production/", `certsync\\other`, 1)},
+		{"unknown field", "pull", testPullConfig + "oss_object_key = \"certsync/example.com/bundle.enc\"\n"},
+		{"missing role", "pull", testPushConfig},
+		{"invalid TOML", "push", testPushConfig + "dingtalk_webhook = bad-secret-value\n"},
 	}
 	for _, tt := range tests {
-		t.Run(tt.name+tt.value, func(t *testing.T) {
-			t.Setenv(tt.name, tt.value)
-			_, err := Load(tt.cmd)
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Load(tt.command, writeTestConfig(t, tt.contents))
 			if err == nil {
 				t.Fatal("invalid config accepted")
 			}
@@ -76,34 +93,34 @@ func TestEnvironment(t *testing.T) {
 		})
 	}
 }
-func TestRoleSpecificEnvironment(t *testing.T) {
-	t.Run("push discovers groups", func(t *testing.T) {
-		setTestEnvironment(t)
-		t.Setenv("CERTSYNC_GROUPS", "")
-		t.Setenv("CERTSYNC_OUTPUT_DIR", "")
-		t.Setenv("OSS_PREFIX", "certsync/production/")
-		cfg, err := Load("push")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if cfg.Prefix != "certsync/production" || len(cfg.Groups) != 0 {
-			t.Fatal("unexpected push configuration")
-		}
-	})
-	t.Run("pull uses selected groups", func(t *testing.T) {
-		setTestEnvironment(t)
-		t.Setenv("CERTSYNC_SOURCE_DIR", "")
-		t.Setenv("CERTSYNC_GROUPS", "*.example.com,other.com")
-		t.Setenv("OSS_PREFIX", "certsync/production/")
-		cfg, err := Load("pull")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if cfg.Prefix != "certsync/production" || strings.Join(cfg.Groups, ",") != "*.example.com,other.com" {
-			t.Fatal("unexpected pull configuration")
-		}
-	})
+
+func TestRoleSpecificConfig(t *testing.T) {
+	pull := strings.Replace(testPullConfig, `oss_access_key_id = "fake"`, `oss_access_key_id = "download"`, 1)
+	file := writeTestConfig(t, testPushConfig+pull)
+	pushConfig, err := Load("push", file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pullConfig, err := Load("pull", file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pushConfig.Directory != "/certs" || pushConfig.AccessKey != "fake" || pushConfig.Prefix != "certsync/production" || len(pushConfig.Groups) != 0 {
+		t.Fatal("unexpected push configuration")
+	}
+	if pullConfig.Directory != "/nginx/certs" || pullConfig.AccessKey != "download" || pullConfig.Prefix != "certsync/production" || strings.Join(pullConfig.Groups, ",") != "*.example.com,other.com" {
+		t.Fatal("unexpected pull configuration")
+	}
+
+	file = writeTestConfig(t, testPushConfig+"[pull]\ngroups = false\n")
+	if _, err := Load("push", file); err != nil {
+		t.Fatalf("push should ignore invalid pull settings: %v", err)
+	}
+	if _, err := Load("pull", file); err == nil {
+		t.Fatal("invalid selected role accepted")
+	}
 }
+
 func TestGroupsValidation(t *testing.T) {
 	for _, s := range []string{
 		"", "foo..com", "-foo.com", "a.com/xx", "../example.com", "example.com,", "foo_.com",
@@ -114,7 +131,7 @@ func TestGroupsValidation(t *testing.T) {
 		"*." + strings.Repeat("a", 64) + ".com",
 		"*." + strings.Repeat(strings.Repeat("a", 62)+".", 3) + strings.Repeat("a", 63),
 	} {
-		if _, err := ParseGroups(s); err == nil {
+		if _, err := parseGroups(strings.Split(s, ",")); err == nil {
 			t.Fatalf("accepted %q", s)
 		}
 	}
@@ -125,7 +142,7 @@ func TestGroupsValidation(t *testing.T) {
 		{"*.sub.example.com", "*.sub.example.com"},
 		{"*.xn--bcher-kva.example", "*.xn--bcher-kva.example"},
 	} {
-		groups, err := ParseGroups(tt.raw)
+		groups, err := parseGroups(strings.Split(tt.raw, ","))
 		if err != nil || strings.Join(groups, ",") != tt.want {
 			t.Fatalf("valid list %q rejected or changed: %v, %v", tt.raw, groups, err)
 		}

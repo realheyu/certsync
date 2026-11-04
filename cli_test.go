@@ -160,7 +160,7 @@ func TestPushPullWildcardAndPlainGroups(t *testing.T) {
 		}
 	}
 	var err error
-	cfg.Groups, err = ParseGroups(" *.fsbtiot.com, fsbtiot.com, *.other.com ")
+	cfg.Groups, err = parseGroups([]string{" *.fsbtiot.com", "fsbtiot.com", "*.other.com "})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,5 +283,15 @@ func TestCommands(t *testing.T) {
 	cmd.SetArgs([]string{"version"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestConfigFlag(t *testing.T) {
+	filename := writeTestConfig(t, testPushConfig)
+	cmd := NewRootCmd()
+	cmd.SetArgs([]string{"pull", "--config", filename})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), filename) || !strings.Contains(err.Error(), "缺少 [pull]") {
+		t.Fatalf("pull did not load the requested config file: %v", err)
 	}
 }

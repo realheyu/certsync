@@ -3,6 +3,7 @@ module github.com/realheyu/certsync
 go 1.27.3
 
 require (
+	github.com/BurntSushi/toml v1.6.0
 	github.com/aliyun/alibabacloud-oss-go-sdk-v2 v1.6.1
 	github.com/spf13/cobra v1.10.2
 )

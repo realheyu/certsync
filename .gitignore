@@ -25,12 +25,12 @@ profile.cov
 go.work
 go.work.sum
 
-# Runtime credentials; only empty, documented env examples belong in Git.
+# Runtime credentials and legacy env files
+config.toml
 .env
 .env.*
 *.env
 *.env.*
-!*.env.example
 
 # Certificate material, ACME state, and generated encrypted bundles
 *.pem
@@ -41,7 +41,6 @@ go.work.sum
 *.pfx
 *.enc
 .acme.sh/
-config.toml
 
 # Local logs
 *.log

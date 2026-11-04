@@ -22,7 +22,6 @@ jobs:
           cache: true
       - run: go vet ./...
       - run: go test -race ./...
-      - run: for script in deploy/certsync-issuer-job deploy/issuer.env.example deploy/pull.env.example; do bash -n "$script"; done
 
   lint:
     runs-on: ubuntu-latest
