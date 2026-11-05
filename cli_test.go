@@ -3,12 +3,19 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// Core fixtures do not touch the host's /run locks or real services.
+func run(ctx context.Context, out io.Writer, command string, c *Config, st objectStore, roots *x509.CertPool) error {
+	return runTask(ctx, out, command, c, st, roots, taskOptions{})
+}
 
 type memoryStore struct {
 	objects     map[string][]byte
@@ -293,5 +300,17 @@ func TestConfigFlag(t *testing.T) {
 	err := cmd.Execute()
 	if err == nil || !strings.Contains(err.Error(), filename) || !strings.Contains(err.Error(), "缺少 [pull]") {
 		t.Fatalf("pull did not load the requested config file: %v", err)
+	}
+}
+
+func TestReloadNginxFlagIsPullOnly(t *testing.T) {
+	root := NewRootCmd()
+	pull, _, err := root.Find([]string{"pull"})
+	if err != nil || pull.Flags().Lookup("reload-nginx") == nil || pull.Flags().Lookup("reload-nginx").DefValue != "false" {
+		t.Fatal("pull must offer opt-in Nginx reload")
+	}
+	push, _, err := root.Find([]string{"push"})
+	if err != nil || push.Flags().Lookup("reload-nginx") != nil {
+		t.Fatal("push must not accept Nginx reload")
 	}
 }

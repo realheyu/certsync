@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path"
 	"path/filepath"
 	"sort"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -26,24 +28,33 @@ func NewRootCmd() *cobra.Command {
 	var configPath string
 	root.PersistentFlags().StringVar(&configPath, "config", defaultConfigPath, "TOML 配置文件路径")
 	for _, name := range []string{"push", "pull"} {
+		var reloadNginx bool
 		description := "遍历总目录，逐组校验并加密上传 OSS"
 		if name == "pull" {
 			description = "按组列表批量下载，解密校验后安装到各自子目录"
 		}
-		root.AddCommand(&cobra.Command{Use: name, Short: description, Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error {
+		command := &cobra.Command{Use: name, Short: description, Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := Load(cmd.Name(), configPath)
 			if err != nil {
 				return err
 			}
-			return run(cmd.Context(), cmd.OutOrStdout(), cmd.Name(), cfg, newStore(cfg), nil)
-		}})
+			return runTask(cmd.Context(), cmd.OutOrStdout(), cmd.Name(), cfg, newStore(cfg), nil, taskOptions{
+				lockPath: defaultLockPath(cmd.Name()), reloadNginx: reloadNginx,
+			})
+		}}
+		if name == "pull" {
+			command.Flags().BoolVar(&reloadNginx, "reload-nginx", false, "整批下载成功后检查并重载 Nginx")
+		}
+		root.AddCommand(command)
 	}
 	root.AddCommand(&cobra.Command{Use: "version", Args: cobra.NoArgs, Run: func(cmd *cobra.Command, args []string) { fmt.Fprintln(cmd.OutOrStdout(), Version) }})
 	return root
 }
 
 func Execute() {
-	if err := NewRootCmd().Execute(); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := NewRootCmd().ExecuteContext(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, "certsync:", err)
 		os.Exit(1)
 	}
@@ -79,17 +90,8 @@ func readBounded(root *os.Root, name string) ([]byte, error) {
 	return data, nil
 }
 
-// roots is only injected by tests; the executable always uses system roots.
-func run(ctx context.Context, out io.Writer, command string, c *Config, st objectStore, roots *x509.CertPool) error {
-	notices := newNotifications(c, out)
-	defer notices.flush(ctx)
-	if command == "push" {
-		return pushAll(ctx, out, c, st, roots, notices)
-	}
-	return pullAll(ctx, out, c, st, roots, notices)
-}
-
 func pushAll(ctx context.Context, out io.Writer, c *Config, st objectStore, roots *x509.CertPool, notices *notifications) error {
+	notices.at("", "打开来源目录")
 	root, err := os.OpenRoot(c.Directory)
 	if err != nil {
 		return err
@@ -100,19 +102,22 @@ func pushAll(ctx context.Context, out io.Writer, c *Config, st objectStore, root
 		return err
 	}
 	defer dir.Close()
+	notices.at("", "遍历来源目录")
 	entries, err := dir.ReadDir(-1)
 	if err != nil {
 		return err
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 	succeeded, failed := 0, 0
+	notices.hasCounts = true
 	for _, entry := range entries {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
 			failed++
-			fmt.Fprintf(out, "push 失败，组 %q: 不支持软链接\n", entry.Name())
+			notices.failed++
+			notices.failure(entry.Name(), "检查来源目录", fmt.Errorf("不支持软链接"))
 			continue
 		}
 		if !entry.IsDir() {
@@ -120,13 +125,19 @@ func pushAll(ctx context.Context, out io.Writer, c *Config, st objectStore, root
 		}
 		if err := pushGroup(ctx, root, entry.Name(), c, st, roots, notices); err != nil {
 			failed++
-			fmt.Fprintf(out, "push 失败，组 %q: %v\n", entry.Name(), err)
+			notices.failed++
+			notices.failure(entry.Name(), notices.stage, err)
 			continue
 		}
 		succeeded++
+		notices.succeeded++
 		fmt.Fprintf(out, "push 成功，组 %s → %s\n", entry.Name(), path.Join(c.Prefix, entry.Name(), "bundle.enc"))
 	}
 	fmt.Fprintf(out, "push 汇总：成功 %d 组，失败 %d 组\n", succeeded, failed)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	notices.at("", "上传批次汇总")
 	if failed > 0 {
 		return fmt.Errorf("存在 %d 组上传失败，详见日志", failed)
 	}
@@ -137,9 +148,11 @@ func pushAll(ctx context.Context, out io.Writer, c *Config, st objectStore, root
 }
 
 func pushGroup(ctx context.Context, root *os.Root, group string, c *Config, st objectStore, roots *x509.CertPool, notices *notifications) error {
+	notices.at(group, "检查组名")
 	if !validGroupName(group) {
 		return fmt.Errorf("子目录名必须是小写普通域名或以 *. 开头的通配域名")
 	}
+	notices.at(group, "读取证书")
 	cert, err := readBounded(root, filepath.Join(group, CertName))
 	if err != nil {
 		return err
@@ -149,21 +162,26 @@ func pushGroup(ctx context.Context, root *os.Root, group string, c *Config, st o
 	if expires, err := certificateExpiry(cert); err == nil {
 		notices.expiring(group, expires)
 	}
+	notices.at(group, "读取私钥")
 	key, err := readBounded(root, filepath.Join(group, KeyName))
 	if err != nil {
 		return err
 	}
+	notices.at(group, "上传证书校验")
 	if err := Validate(cert, key, []string{group}, time.Now(), roots); err != nil {
 		return err
 	}
+	notices.at(group, "加密证书包")
 	data, err := Encrypt(c.Key, Bundle{FullchainPEM: string(cert), PrivateKeyPEM: string(key)})
 	if err != nil {
 		return err
 	}
+	notices.at(group, "OSS 上传")
 	return st.Put(ctx, path.Join(c.Prefix, group, "bundle.enc"), data)
 }
 
 func pullAll(ctx context.Context, out io.Writer, c *Config, st objectStore, roots *x509.CertPool, notices *notifications) error {
+	notices.at("", "检查下载目录和组列表")
 	if len(c.Groups) == 0 {
 		return fmt.Errorf("缺少下载组列表 groups")
 	}
@@ -181,6 +199,7 @@ func pullAll(ctx context.Context, out io.Writer, c *Config, st objectStore, root
 		return fmt.Errorf("输出总目录必须是普通目录")
 	}
 	succeeded, failed := 0, 0
+	notices.hasCounts = true
 	for _, group := range c.Groups {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -188,17 +207,28 @@ func pullAll(ctx context.Context, out io.Writer, c *Config, st objectStore, root
 		changed, err := pullGroup(ctx, group, c, st, roots, notices)
 		if err != nil {
 			failed++
-			fmt.Fprintf(out, "pull 失败，组 %s: %v\n", group, err)
+			notices.failed++
+			if notices.stage == "安装证书文件" {
+				notices.uncertainFiles = true
+			}
+			notices.failure(group, notices.stage, err)
 			continue
 		}
 		succeeded++
+		notices.succeeded++
 		if changed {
+			notices.changed++
 			fmt.Fprintf(out, "pull 成功，组 %s: 证书和私钥已替换\n", group)
 		} else {
 			fmt.Fprintf(out, "pull 成功，组 %s: 文件内容未变化\n", group)
 		}
 	}
 	fmt.Fprintf(out, "pull 汇总：成功 %d 组，失败 %d 组\n", succeeded, failed)
+	// Preserve the active group/stage when the overall deadline expired.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	notices.at("", "下载批次汇总")
 	if failed > 0 {
 		return fmt.Errorf("存在 %d 组下载或安装失败，详见日志", failed)
 	}
@@ -206,15 +236,18 @@ func pullAll(ctx context.Context, out io.Writer, c *Config, st objectStore, root
 }
 
 func pullGroup(ctx context.Context, group string, c *Config, st objectStore, roots *x509.CertPool, notices *notifications) (bool, error) {
+	notices.at(group, "OSS 下载")
 	data, err := st.Get(ctx, path.Join(c.Prefix, group, "bundle.enc"))
 	if err != nil {
 		return false, err
 	}
+	notices.at(group, "解密证书包")
 	bundle, err := Decrypt(c.Key, data)
 	if err != nil {
 		return false, err
 	}
 	cert, key := []byte(bundle.FullchainPEM), []byte(bundle.PrivateKeyPEM)
+	notices.at(group, "下载证书校验")
 	if err := Validate(cert, key, []string{group}, time.Now(), roots); err != nil {
 		return false, err
 	}
@@ -222,6 +255,10 @@ func pullGroup(ctx context.Context, group string, c *Config, st objectStore, roo
 	if err != nil {
 		return false, err
 	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	notices.at(group, "安装证书文件")
 	changed, err := Install(filepath.Join(c.Directory, group), cert, key)
 	if err == nil && changed {
 		notices.replaced(group, expires)

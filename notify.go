@@ -14,22 +14,31 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
+	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const expiryWarningWindow = 15 * 24 * time.Hour
 
 type certificateNotice struct {
-	group, event string
-	expires      time.Time
+	group, event  string
+	expires       time.Time
+	stage, detail string
 }
 
 type notifications struct {
-	config *Config
-	out    io.Writer
-	now    time.Time
-	host   string
-	events []certificateNotice
+	config                     *Config
+	out                        io.Writer
+	now                        time.Time
+	host                       string
+	events                     []certificateNotice
+	operation, result, service string
+	group, stage               string
+	succeeded, failed, changed int
+	failureCount               int
+	hasCounts, uncertainFiles  bool
 }
 
 func newNotifications(config *Config, out io.Writer) *notifications {
@@ -53,7 +62,54 @@ func (n *notifications) expiring(group string, expires time.Time) {
 }
 
 func (n *notifications) replaced(group string, expires time.Time) {
-	n.events = append(n.events, certificateNotice{group: group, event: "证书和私钥已成功替换（尚未确认服务 reload）", expires: expires})
+	n.events = append(n.events, certificateNotice{group: group, event: "证书和私钥已成功替换", expires: expires})
+}
+
+func (n *notifications) at(group, stage string) { n.group, n.stage = group, stage }
+
+func (n *notifications) failure(group, stage string, err error) {
+	n.failureCount++
+	detail := n.clean(err.Error())
+	n.events = append(n.events, certificateNotice{group: group, event: "执行失败", stage: stage, detail: detail})
+	fmt.Fprintf(n.out, "%s 失败，组 %q，阶段 %s: %s\n", n.operation, n.clean(group), stage, detail)
+}
+
+var privateKeyText = regexp.MustCompile(`(?s)-----BEGIN [^-\r\n]*PRIVATE KEY-----.*?(?:-----END [^-\r\n]*PRIVATE KEY-----|$)`)
+var errorURL = regexp.MustCompile(`https?://[^\s<>"']+`)
+
+// Failure messages may include OS, service or SDK errors. Redact before logging
+// as well as before sending; truncate only after removing complete secrets.
+func (n *notifications) clean(s string) string {
+	s = privateKeyText.ReplaceAllString(s, "[私钥内容已隐藏]")
+	for _, secret := range []string{n.config.AccessKey, n.config.SecretKey, n.config.DingTalkSecret, n.config.DingTalkWebhook, base64.StdEncoding.EncodeToString(n.config.Key)} {
+		if secret != "" {
+			s = strings.ReplaceAll(s, secret, "[已隐藏]")
+		}
+	}
+	if u, err := url.Parse(n.config.DingTalkWebhook); err == nil {
+		for _, key := range []string{"access_token", "sign"} {
+			if secret := u.Query().Get(key); secret != "" {
+				s = strings.ReplaceAll(s, secret, "[已隐藏]")
+			}
+		}
+	}
+	s = errorURL.ReplaceAllStringFunc(s, func(raw string) string {
+		u, err := url.Parse(raw)
+		if err != nil {
+			return "[URL已隐藏]"
+		}
+		u.User, u.RawQuery, u.Fragment = nil, "", ""
+		return u.String()
+	})
+	s = strings.ToValidUTF8(s, "�")
+	if len(s) > 2000 {
+		s = s[:2000]
+		for !utf8.ValidString(s) {
+			s = s[:len(s)-1]
+		}
+		s += "…（已截断）"
+	}
+	return s
 }
 
 func noticeTime(value time.Time) string {
@@ -61,19 +117,44 @@ func noticeTime(value time.Time) string {
 }
 
 func (n *notifications) messages() []string {
-	header := fmt.Sprintf("certsync 证书通知\n机器：%s\n检查时间：%s\n", n.host, noticeTime(n.now))
+	header := fmt.Sprintf("certsync 证书通知\n机器：%s\n检查时间：%s\n", n.clean(n.host), noticeTime(n.now))
+	if n.operation != "" {
+		header += fmt.Sprintf("操作：%s\n任务结果：%s\n", n.operation, n.result)
+	}
+	if n.hasCounts {
+		header += fmt.Sprintf("批次汇总：成功 %d 组，失败 %d 组\n", n.succeeded, n.failed)
+	}
+	if n.operation == "pull" {
+		header += fmt.Sprintf("文件状态：成功替换 %d 组\n", n.changed)
+		if n.uncertainFiles {
+			header += "文件状态补充：安装失败组可能已部分替换，请检查或重跑修复\n"
+		}
+	}
+	if n.service != "" {
+		header += "服务状态：" + n.service + "\n"
+	}
 	var messages []string
 	content := header
 	for _, event := range n.events {
-		remaining := event.expires.Sub(n.now)
-		status := "剩余"
-		if remaining <= 0 {
-			status = "已过期"
-			remaining = -remaining
+		group := event.group
+		if group == "" {
+			group = "整批任务"
 		}
-		days := int(remaining / (24 * time.Hour))
-		hours := int(remaining % (24 * time.Hour) / time.Hour)
-		row := fmt.Sprintf("\n证书组：%s\n事件：%s\n到期时间：%s\n%s：%d 天 %d 小时\n", event.group, event.event, noticeTime(event.expires), status, days, hours)
+		row := fmt.Sprintf("\n证书组：%s\n事件：%s\n", n.clean(group), event.event)
+		if event.stage != "" {
+			row += fmt.Sprintf("失败阶段：%s\n原因：%s\n", n.clean(event.stage), n.clean(event.detail))
+		}
+		if !event.expires.IsZero() {
+			remaining := event.expires.Sub(n.now)
+			status := "剩余"
+			if remaining <= 0 {
+				status = "已过期"
+				remaining = -remaining
+			}
+			days := int(remaining / (24 * time.Hour))
+			hours := int(remaining % (24 * time.Hour) / time.Hour)
+			row += fmt.Sprintf("到期时间：%s\n%s：%d 天 %d 小时\n", noticeTime(event.expires), status, days, hours)
+		}
 		// Keep text messages small and split only between complete events.
 		if len(content)+len(row) > 12000 && content != header {
 			messages = append(messages, content)
@@ -99,7 +180,7 @@ func (n *notifications) flush(ctx context.Context) {
 	}
 	for _, message := range n.messages() {
 		if err := sendDingTalk(ctx, client, n.config.DingTalkWebhook, n.config.DingTalkSecret, message); err != nil {
-			fmt.Fprintf(n.out, "钉钉通知失败（不影响证书上传、替换或后续 reload）: %v\n", err)
+			fmt.Fprintf(n.out, "钉钉通知失败（不改变任务结果）: %v\n", err)
 		} else {
 			fmt.Fprintln(n.out, "钉钉通知已发送")
 		}

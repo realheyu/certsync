@@ -128,7 +128,7 @@ func TestPushExpiryAlertsOnEveryRunAndFailures(t *testing.T) {
 	}
 }
 
-func TestPullNotifiesOnlySuccessfulReplacement(t *testing.T) {
+func TestPullReportsFailuresAndSuccessfulReplacements(t *testing.T) {
 	var messages []string
 	server := recordingRobot(t, &messages)
 	fixture := newTestChain(t, false)
@@ -156,8 +156,8 @@ func TestPullNotifiesOnlySuccessfulReplacement(t *testing.T) {
 		t.Fatal("repairing a missing key was not notified")
 	}
 	st.objects["certsync/example.com/bundle.enc"] = []byte("corrupt bundle")
-	if err := pull(); err == nil || len(messages) != 2 {
-		t.Fatal("failed download/decryption was notified as success")
+	if err := pull(); err == nil || len(messages) != 3 || !strings.Contains(messages[2], "失败阶段：解密证书包") {
+		t.Fatal("failed download/decryption did not send a failure notification")
 	}
 	st.objects["certsync/example.com/bundle.enc"] = data
 	cfg.Directory = t.TempDir()
@@ -165,16 +165,16 @@ func TestPullNotifiesOnlySuccessfulReplacement(t *testing.T) {
 	if err := os.MkdirAll(blocked, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := pull(); err == nil || len(messages) != 2 {
-		t.Fatal("failed installation was notified as success")
+	if err := pull(); err == nil || len(messages) != 4 || !strings.Contains(messages[3], "失败阶段：安装证书文件") {
+		t.Fatal("failed installation did not send a failure notification")
 	}
 	cfg.Directory = t.TempDir()
 	cfg.Groups = []string{"missing.com", "example.com"}
-	if err := pull(); err == nil || len(messages) != 3 {
-		t.Fatal("successful group in a partially failed batch was not notified")
+	if err := pull(); err == nil || len(messages) != 5 {
+		t.Fatal("partial batch did not send a combined notification")
 	}
-	if strings.Contains(messages[2], "missing.com") {
-		t.Fatal("failed group included in replacement notification")
+	if !strings.Contains(messages[4], "证书组：missing.com\n事件：执行失败") || !strings.Contains(messages[4], "证书组：example.com\n事件：证书和私钥已成功替换") || !strings.Contains(messages[4], "成功 1 组，失败 1 组") {
+		t.Fatal("partial batch omitted failure or successful replacement details")
 	}
 }
 

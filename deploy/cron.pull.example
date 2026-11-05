@@ -1,6 +1,8 @@
-# /etc/cron.d/certsync，root:root 0644。配置的 [pull] 选择多个组，锁覆盖整个批次和统一 reload。
-# 每次整批成功拉取后都检查和 reload，包括内容相同时；失败时后续命令不会执行。
+# /etc/cron.d/certsync，root:root 0644。程序内置锁和 30 分钟超时，覆盖整批下载及 Nginx 检查、重载。
+# 所有组成功（包括内容相同）后才检查和 reload；任意一组失败则跳过，已替换文件不回滚。
+# 同步、锁、超时及 Nginx 检查/reload 失败均通知；通知包含整轮任务与服务结果。
+# 默认每日 04:23 执行，按服务器 cron 时区计算。
 SHELL=/bin/bash
 PATH=/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-41 */6 * * * root flock -n /run/certsync-pull.lock timeout 1800 /bin/bash -ec '/usr/local/bin/certsync pull; nginx -t; systemctl reload nginx' >>/var/log/certsync.log 2>&1
+23 4 * * * root /usr/local/bin/certsync pull --reload-nginx >>/var/log/certsync.log 2>&1

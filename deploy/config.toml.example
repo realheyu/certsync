@@ -1,5 +1,5 @@
 # 安装为 /etc/certsync/config.toml，root:root 0600。
-# 上传端填写 [push]，业务机填写 [pull]，可以删掉不用的区块。
+# 上传端只需 [push]，业务机只需 [pull]，可以删除整个不用的区块。
 # 两端使用同一个 key（openssl rand -base64 32 生成），分别填写 OSS 凭证。
 
 [push]

@@ -30,7 +30,7 @@ func Install(dir string, cert, key []byte) (bool, error) {
 	return install(dir, cert, key, os.Rename)
 }
 
-func install(dir string, cert, key []byte, rename func(string, string) error) (bool, error) {
+func install(dir string, cert, key []byte, rename func(string, string) error) (changed bool, err error) {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return false, err
 	}
@@ -67,12 +67,20 @@ func install(dir string, cert, key []byte, rename func(string, string) error) (b
 	if err != nil {
 		return false, err
 	}
-	defer os.Remove(certTmp)
+	defer func() {
+		if removeErr := os.Remove(certTmp); removeErr != nil && !os.IsNotExist(removeErr) {
+			err = errors.Join(err, fmt.Errorf("清理证书临时文件失败: %w", removeErr))
+		}
+	}()
 	keyTmp, err := writeTemp(dir, key, 0o600)
 	if err != nil {
 		return false, err
 	}
-	defer os.Remove(keyTmp)
+	defer func() {
+		if removeErr := os.Remove(keyTmp); removeErr != nil && !os.IsNotExist(removeErr) {
+			err = errors.Join(err, fmt.Errorf("清理私钥临时文件失败: %w", removeErr))
+		}
+	}()
 	if err := rename(certTmp, certPath); err != nil {
 		return false, fmt.Errorf("替换证书: %w", err)
 	}

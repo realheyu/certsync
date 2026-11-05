@@ -1,6 +1,8 @@
 # certsync 日志轮转(可选)→ 复制为 /etc/logrotate.d/certsync
 # 日志量小(每轮几行),机器少可不装;量大后再上
+# 与 root cron 使用相同身份轮转，兼容 /var/log 为 root:syslog 0775 的系统。
 /var/log/certsync.log {
+    su root root
     weekly
     rotate 8
     missingok

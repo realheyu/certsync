@@ -1,6 +1,7 @@
 # /etc/cron.d/certsync，root:root 0644。仅负责上传，acme.sh 独立管理申请、续期和调度。
 # push 遍历已导出的总目录，逐组上传独立 JSON 加密包；按需调整上传频率。
+# 默认每日 03:23 执行，按服务器 cron 时区计算。
 SHELL=/bin/bash
 PATH=/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-23 3 * * * root flock -n /run/certsync-issuer.lock timeout 1800 /usr/local/bin/certsync push >>/var/log/certsync.log 2>&1
+23 3 * * * root /usr/local/bin/certsync push >>/var/log/certsync.log 2>&1
